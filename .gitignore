@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual env
+.venv/
+venv/
+
+# Env files (NEVER commit secrets)
+.env
+.env.local
+
+# Dagster local instance state
+dagster_home/storage/
+dagster_home/history/
+dagster_home/schedules/
+dagster_home/.logs_queue/
+dagster_home/logs/
+dagster_home/compute_logs/
+
+# Local data lake (when running outside docker)
+.lake/
+data/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store

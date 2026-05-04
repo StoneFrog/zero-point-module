@@ -1,0 +1,213 @@
+# Local lakehouse stack for the energy-price pipeline.
+#
+# Services:
+#   postgres        shared metastore (dagster + nessie + superset DBs)
+#   minio           S3-compatible object storage (the lake)
+#   minio-init      one-shot: create the lake bucket
+#   nessie          Iceberg REST catalog, Postgres-backed
+#   dagster-webserver  UI on :3000
+#   dagster-daemon  schedules + sensors
+#   superset-init   one-shot: db upgrade + admin user
+#   superset        BI UI on :8088
+#
+# Bring it up:    docker compose up -d
+# Logs:           docker compose logs -f <service>
+# Stop + clean:   docker compose down -v   (deletes all data)
+
+name: energy-pipeline
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing local/${LAKE_BUCKET} &&
+        mc anonymous set download local/${LAKE_BUCKET} &&
+        echo "MinIO bucket '${LAKE_BUCKET}' ready."
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKE_BUCKET: ${LAKE_BUCKET}
+    restart: "no"
+
+  nessie:
+    # Nessie speaks the Iceberg REST catalog protocol on /iceberg/<branch>.
+    # All Quarkus config below is the canonical "Postgres + S3" recipe.
+    image: ghcr.io/projectnessie/nessie:0.99.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "19120:19120"
+    environment:
+      # Persist the catalog ref-state in Postgres (database "nessie").
+      NESSIE_VERSION_STORE_TYPE: JDBC2
+      NESSIE_VERSION_STORE_PERSIST_JDBC_DATASOURCE: postgresql
+      QUARKUS_DATASOURCE_POSTGRESQL_JDBC_URL: jdbc:postgresql://postgres:5432/nessie
+      QUARKUS_DATASOURCE_POSTGRESQL_USERNAME: ${POSTGRES_USER}
+      QUARKUS_DATASOURCE_POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD}
+      # Single warehouse named "warehouse", rooted at s3://lake/warehouse/.
+      NESSIE_CATALOG_DEFAULT_WAREHOUSE: warehouse
+      NESSIE_CATALOG_WAREHOUSES_WAREHOUSE_LOCATION: s3://${LAKE_BUCKET}/warehouse/
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_REGION: ${S3_REGION}
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ENDPOINT: http://minio:9000/
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_PATH_STYLE_ACCESS: "true"
+      # S3 credentials, referenced indirectly through the Quarkus secrets store.
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ACCESS_KEY: urn:nessie-secret:quarkus:nessie.catalog.secrets.access-key
+      NESSIE_CATALOG_SECRETS_ACCESS_KEY_NAME: ${MINIO_ROOT_USER}
+      NESSIE_CATALOG_SECRETS_ACCESS_KEY_SECRET: ${MINIO_ROOT_PASSWORD}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:19120/q/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  dagster-webserver:
+    build:
+      context: .
+      dockerfile: docker/dagster/Dockerfile
+    image: energy-pipeline/dagster:dev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nessie:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN}
+      ENTSOE_USE_FIXTURE: ${ENTSOE_USE_FIXTURE}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKE_BUCKET: ${LAKE_BUCKET}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      NESSIE_URI: ${NESSIE_URI}
+    volumes:
+      - ./dagster_home:/opt/dagster/dagster_home
+      - ./tests:/opt/dagster/app/tests:ro
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+
+  dagster-daemon:
+    image: energy-pipeline/dagster:dev
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      dagster-webserver:
+        condition: service_started
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN}
+      ENTSOE_USE_FIXTURE: ${ENTSOE_USE_FIXTURE}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKE_BUCKET: ${LAKE_BUCKET}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      NESSIE_URI: ${NESSIE_URI}
+    volumes:
+      - ./dagster_home:/opt/dagster/dagster_home
+      - ./tests:/opt/dagster/app/tests:ro
+    command: ["dagster-daemon", "run", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+
+  superset-init:
+    build:
+      context: .
+      dockerfile: docker/superset/Dockerfile
+    image: energy-pipeline/superset:dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+      SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL}
+    volumes:
+      - ./docker/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        # First-time bootstrap: db schema + admin user. Idempotent.
+        superset db upgrade
+        superset fab create-admin \
+          --username "$$SUPERSET_ADMIN_USER" \
+          --firstname Admin --lastname User \
+          --email "$$SUPERSET_ADMIN_EMAIL" \
+          --password "$$SUPERSET_ADMIN_PASSWORD" || true
+        superset init
+        echo "Superset initialised."
+    restart: "no"
+
+  superset:
+    image: energy-pipeline/superset:dev
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./docker/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+
+volumes:
+  postgres_data:
+  minio_data:
