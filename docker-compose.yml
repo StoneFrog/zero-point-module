@@ -83,10 +83,9 @@ services:
     ports:
       - "19120:19120"
     environment:
-      # All Nessie configuration lives in the mounted properties file so the
-      # secret-URN resolver sees the literal dotted property names.
-      # Env vars below are referenced by ${VAR} interpolation in that file.
-      SMALLRYE_CONFIG_LOCATIONS: file:/deployments/config/application.properties
+      # Quarkus 3 auto-discovers /deployments/config/application.properties
+      # (PWD-relative config/). Env vars below are referenced via ${VAR}
+      # interpolation in that file.
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       LAKE_BUCKET: ${LAKE_BUCKET}
