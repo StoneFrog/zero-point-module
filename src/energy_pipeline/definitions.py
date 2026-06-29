@@ -13,11 +13,11 @@ from dagster import (
     load_assets_from_modules,
 )
 
-from energy_pipeline.assets import bronze, gold, silver
+from energy_pipeline.assets import bronze, gold, gold_windows, silver
 from energy_pipeline.config import settings
 from energy_pipeline.resources import EntsoeResource, IcebergCatalogResource
 
-all_assets = load_assets_from_modules([bronze, silver, gold])
+all_assets = load_assets_from_modules([bronze, silver, gold, gold_windows])
 
 # One job that materialises bronze -> silver -> gold for the latest partition.
 # Dagster figures out the order from the asset dependency graph.
@@ -27,13 +27,14 @@ daily_pipeline_job = define_asset_job(
     description="End-to-end refresh: ENTSO-E -> bronze -> silver -> gold for one delivery day.",
 )
 
-# ENTSO-E publishes day-ahead at ~12:45 CET; run at 13:30 to be safe.
-# Cron is in UTC inside containers; 13:30 CET = 11:30 UTC (winter) / 12:30 UTC (summer).
-# We use 12:30 UTC and accept a 1h delay in winter — simpler than DST-aware logic.
+# ENTSO-E publishes day-ahead at ~12:45 Brussels local time (CET in winter,
+# CEST in summer). Schedule against the market timezone so the absolute UTC
+# offset shifts automatically across DST; Dagster handles the conversion.
 daily_schedule = ScheduleDefinition(
     job=daily_pipeline_job,
-    cron_schedule="30 12 * * *",
-    description="Run the daily pipeline at 12:30 UTC (after ENTSO-E day-ahead publication).",
+    cron_schedule="30 13 * * *",
+    execution_timezone="Europe/Brussels",
+    description="Run the daily pipeline at 13:30 Brussels local time, ~45min after ENTSO-E day-ahead publication.",
 )
 
 defs = Definitions(

@@ -25,10 +25,11 @@ from energy_pipeline.config import settings
 from energy_pipeline.entsoe.zones import ZONES
 from energy_pipeline.resources import EntsoeResource
 
-# Backfill horizon: ENTSO-E publishes day-ahead at ~12:45 CET the day before.
-# Start the partition definition from a fixed historical date so backfill is
-# meaningful. Adjust as needed.
-daily_partitions = DailyPartitionsDefinition(start_date="2026-01-01")
+# Backfill horizon: ENTSO-E day-ahead data goes back to ~2015. Starting from
+# 2020-01-01 gives us six years of history for forecasting + comparison.
+# A full backfill is ~6y * 365d * 40 zones = ~88k API calls (ENTSO-E rate-limits
+# at 400/min, so ~4h of API time). Launch via Dagster's Backfills UI.
+daily_partitions = DailyPartitionsDefinition(start_date="2020-01-01")
 
 
 def _s3_fs() -> s3fs.S3FileSystem:

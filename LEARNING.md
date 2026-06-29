@@ -158,6 +158,36 @@ Standard "data product" pattern.
 - **Schema tests on silver/gold** — bare-minimum dbt tests will cover this in
   Phase 3.
 
+## Known limitations / deferred TODOs
+
+Things we explicitly accepted as good-enough for Phase 1 and will revisit:
+
+- **Multi-dimensional partitions (date × zone)**. Bronze currently fans out
+  internally across zones with a `try/except` per zone. The more idiomatic
+  Dagster shape is `MultiPartitionsDefinition` on `(delivery_date,
+  bidding_zone)`, giving native per-zone retry, backfill, and failure
+  observability — at the cost of ~14k partitions/year per asset in the UI.
+- **AssetCheck gates**. Add a Dagster asset check that fails materialization
+  if fewer than N zones succeeded, or if a required zone (PL, DE_LU) is
+  missing. Currently logged as warnings only.
+- **Tie-handling for cheapest/peak hour**. `gold_prices_daily_stats` picks the
+  earliest hour on ties via `ORDER BY price ASC, ts_utc ASC` — silently
+  arbitrary. The `gold_cheapest_windows` asset addresses the common
+  smart-home use case ("cheapest 2h block") but doesn't expose all ties.
+- **Image pinning**. Postgres, Nessie, and the official Superset image should
+  be pinned by digest (not just tag) for true reproducibility across rebuilds.
+  MinIO and mc are already pinned by dated release tag.
+- **Type-coercion friction in gold**. The explicit Arrow `.cast()` calls in
+  gold assets exist because DuckDB returns `int64` for `COUNT(*)` while our
+  Iceberg schema declares `int32`. dbt-iceberg handles this in Phase 3.
+- **Sub-hourly resolution support**. `gold_cheapest_windows` filters to
+  `resolution_minutes = 60`. DE-LU has been quarter-hourly since 2025-10;
+  to include it we'd need to either pre-aggregate to hourly or compute
+  windows in interval units rather than hours.
+- **Iceberg compaction**. Day-level partitioning produces many small Parquet
+  files. Phase 2 adds a periodic `rewrite_data_files` job that consolidates
+  small files into larger ones, improving long-range query performance.
+
 ## Reading the code in order
 
 If you're tracing the data path:

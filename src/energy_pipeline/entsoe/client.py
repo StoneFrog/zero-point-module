@@ -9,11 +9,16 @@ API docs: https://transparency.entsoe.eu/content/static_content/Static%20content
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+# ENTSO-E aligns the "delivery day" to Brussels local time (CET/CEST) across
+# the entire European day-ahead market. zoneinfo handles DST transitions.
+_MARKET_TZ = ZoneInfo("Europe/Brussels")
 
 # Document type for day-ahead prices (Article 12.1.D of the Transparency Regulation).
 DOCUMENT_TYPE_DAY_AHEAD = "A44"
@@ -59,12 +64,13 @@ class EntsoeClient:
         if self._use_fixture or not self._api_token:
             return FIXTURE_PATH.read_bytes()
 
-        # ENTSO-E uses inclusive periodStart and exclusive periodEnd in UTC.
-        # For a delivery day, that's 23:00 UTC the day before to 23:00 UTC of the day
-        # (CET-aligned days). For learning we use UTC-aligned 00:00..00:00 — the API
-        # returns the right slice either way.
-        period_start = datetime.combine(delivery_day, datetime.min.time(), tzinfo=timezone.utc)
-        period_end = period_start + timedelta(days=1)
+        # The ENTSO-E "delivery day" is the 24h window starting at 00:00
+        # Brussels local time. In UTC that's 23:00 the day before (winter, CET)
+        # or 22:00 the day before (summer, CEST). zoneinfo computes the correct
+        # offset for each date including DST transitions.
+        local_midnight = datetime.combine(delivery_day, time.min, tzinfo=_MARKET_TZ)
+        period_start = local_midnight.astimezone(timezone.utc)
+        period_end = (local_midnight + timedelta(days=1)).astimezone(timezone.utc)
 
         params = {
             "securityToken": self._api_token,

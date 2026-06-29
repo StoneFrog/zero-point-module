@@ -35,9 +35,7 @@ def _parse_resolution(text: str) -> int:
 
 
 def _parse_iso_utc(text: str) -> datetime:
-    """ENTSO-E timestamps end in 'Z' for UTC."""
-    if text.endswith("Z"):
-        return datetime.fromisoformat(text[:-1]).replace(tzinfo=timezone.utc)
+    """ENTSO-E timestamps end in 'Z' for UTC. Python 3.11+ parses Z natively."""
     return datetime.fromisoformat(text).astimezone(timezone.utc)
 
 
