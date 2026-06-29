@@ -100,7 +100,10 @@ services:
       NESSIE_CATALOG_SECRETS_ACCESS_KEY_NAME: ${MINIO_ROOT_USER}
       NESSIE_CATALOG_SECRETS_ACCESS_KEY_SECRET: ${MINIO_ROOT_PASSWORD}
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:19120/q/health/ready"]
+      # Nessie 0.99 moved Quarkus management endpoints (/q/health/*) to a
+      # separate port 9000. Main Iceberg REST / Nessie API stays on 19120.
+      # Port 9000 here is internal to this container — no clash with MinIO.
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/q/health/ready"]
       interval: 5s
       timeout: 5s
       retries: 30

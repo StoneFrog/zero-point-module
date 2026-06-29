@@ -4,6 +4,7 @@ FROM apache/superset:4.1.1
 
 USER root
 RUN pip install --no-cache-dir \
+    psycopg2-binary==2.9.10 \
     duckdb==1.1.3 \
     duckdb-engine==0.13.4 \
     pyiceberg==0.8.1
