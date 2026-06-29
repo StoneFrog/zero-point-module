@@ -18,7 +18,9 @@ COPY pyproject.toml ./
 COPY uv.loc[k] ./
 RUN uv sync --no-install-project --no-dev
 
-# Copy the project source and install it.
+# Copy project source + README (hatchling reads README.md at build time because
+# pyproject.toml declares `readme = "README.md"`).
+COPY README.md ./
 COPY src ./src
 RUN uv sync --no-dev
 
