@@ -95,13 +95,14 @@ services:
       NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_REGION: ${S3_REGION}
       NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ENDPOINT: http://minio:9000/
       NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_PATH_STYLE_ACCESS: "true"
-      # S3 credentials. `access-key` is a composite secret with `.name` and
-      # `.secret` subkeys — Quarkus binds them directly when set this way.
-      # The URN-via-quarkus-secrets indirection pattern from the Nessie docs
-      # didn't resolve here, possibly because no secret store provider is
-      # explicitly configured.
-      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ACCESS_KEY_NAME: ${MINIO_ROOT_USER}
-      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ACCESS_KEY_SECRET: ${MINIO_ROOT_PASSWORD}
+      # S3 credentials via Quarkus secret URN. Earlier attempts failed because
+      # the secret path collided with the URN target's own property path
+      # (access-key was both the URN field and the secret subtree). Point the
+      # URN at a distinct path `nessie.catalog.secrets.minio` whose .name and
+      # .secret subkeys carry the actual values.
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ACCESS_KEY: urn:nessie-secret:quarkus:nessie.catalog.secrets.minio
+      NESSIE_CATALOG_SECRETS_MINIO_NAME: ${MINIO_ROOT_USER}
+      NESSIE_CATALOG_SECRETS_MINIO_SECRET: ${MINIO_ROOT_PASSWORD}
     healthcheck:
       # Nessie 0.99 moved Quarkus management endpoints (/q/health/*) to a
       # separate port 9000. Main Iceberg REST / Nessie API stays on 19120.
