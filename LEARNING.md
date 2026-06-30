@@ -118,11 +118,20 @@ chunks) are all columnar. Hard agreement in the industry.
 Schema enforcement, ACID writes, time travel, hidden partitioning, schema
 evolution. Without it, every concurrent write or schema change is a footgun.
 
-### Why Nessie over Polaris/Glue?
-Polaris is gaining momentum and is a perfectly reasonable alternative.
-Nessie is the easiest catalog to run locally and the **branching feature**
-is genuinely useful while you experiment. RBAC and multi-tenancy (Polaris's
-strengths) don't matter for a single-user pet project.
+### Why the Apache Iceberg REST reference catalog (originally planned: Nessie)?
+We first tried Project Nessie 0.99 because of its git-like branching feature,
+but Nessie's required secret-URN indirection couldn't be configured via env
+vars or a mounted properties file in a stable way (the `access-key` property
+is declared as a URN-only String, with no inline credentials form, and the
+default secret manager doesn't expose a Quarkus-config namespace we could
+write to). After several iterations we swapped to the Apache Iceberg REST
+reference catalog (`tabulario/iceberg-rest`) — same REST protocol from
+PyIceberg's perspective, plain AWS-style env-var credentials, no URN games.
+
+Trade-off: we lose Nessie's catalog branching. Two reasonable ways to get it
+back later: (a) revisit Nessie when its docs catch up with current secret-
+manager defaults, or (b) swap to Apache Polaris which uses real RBAC and
+documented credential vending, plus is gaining the most momentum in 2026.
 
 ### Why Dagster over Airflow?
 Asset-oriented model — you declare *what data exists* instead of *what jobs

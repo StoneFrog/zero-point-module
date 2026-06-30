@@ -30,20 +30,20 @@ class EntsoeResource(ConfigurableResource):
 
 
 class IcebergCatalogResource(ConfigurableResource):
-    """Loads a PyIceberg catalog client backed by Nessie's REST endpoint.
+    """Loads a PyIceberg catalog client backed by the Iceberg REST catalog.
 
-    Nessie speaks the Iceberg REST catalog protocol since 0.50, so PyIceberg
-    treats it like any other REST catalog. The catalog stores only metadata
-    pointers; data files live in S3 (MinIO).
+    The catalog stores only metadata pointers; data files live in S3 (MinIO).
+    Any Iceberg-REST-compatible catalog works here — currently the Apache
+    reference implementation (tabulario/iceberg-rest).
     """
 
     @cached_property
     def _catalog(self) -> Catalog:
         return load_catalog(
-            "nessie",
+            "default",
             **{
                 "type": "rest",
-                "uri": settings.nessie_uri,
+                "uri": settings.iceberg_catalog_uri,
                 "warehouse": f"s3://{settings.lake_bucket}/warehouse",
                 "s3.endpoint": settings.s3_endpoint,
                 "s3.access-key-id": settings.minio_root_user,

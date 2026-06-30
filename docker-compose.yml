@@ -1,14 +1,14 @@
 # Local lakehouse stack for the energy-price pipeline.
 #
 # Services:
-#   postgres        shared metastore (dagster + nessie + superset DBs)
-#   minio           S3-compatible object storage (the lake)
-#   minio-init      one-shot: create the lake bucket
-#   nessie          Iceberg REST catalog, Postgres-backed
-#   dagster-webserver  UI on :3000
-#   dagster-daemon  schedules + sensors
-#   superset-init   one-shot: db upgrade + admin user
-#   superset        BI UI on :8088
+#   postgres          shared metastore (dagster + catalog + superset DBs)
+#   minio             S3-compatible object storage (the lake)
+#   minio-init        one-shot: create the lake bucket
+#   iceberg-catalog   Apache Iceberg REST catalog, Postgres-backed
+#   dagster-webserver UI on :3000
+#   dagster-daemon    schedules + sensors
+#   superset-init     one-shot: db upgrade + admin user
+#   superset          BI UI on :8088
 #
 # Bring it up:    docker compose up -d
 # Logs:           docker compose logs -f <service>
@@ -70,10 +70,15 @@ services:
       LAKE_BUCKET: ${LAKE_BUCKET}
     restart: "no"
 
-  nessie:
-    # Nessie speaks the Iceberg REST catalog protocol on /iceberg/<branch>.
-    # All Quarkus config below is the canonical "Postgres + S3" recipe.
-    image: ghcr.io/projectnessie/nessie:0.99.0
+  iceberg-catalog:
+    # Apache Iceberg REST reference catalog. Single-process, Postgres-backed
+    # metadata. We swapped from Nessie 0.99 because its required secret-URN
+    # indirection couldn't be configured via env vars or a mounted
+    # application.properties (the `access-key` property is a URN-only String
+    # in Nessie's schema and has no inline credentials form). The Iceberg
+    # REST protocol is the same; PyIceberg connects identically.
+    # Trade-off: lose Nessie's git-like branching — revisit later with Polaris.
+    image: tabulario/iceberg-rest:1.6.0
     restart: unless-stopped
     depends_on:
       postgres:
@@ -81,24 +86,26 @@ services:
       minio-init:
         condition: service_completed_successfully
     ports:
-      - "19120:19120"
+      - "8181:8181"
     environment:
-      # Quarkus 3 auto-discovers /deployments/config/application.properties
-      # (PWD-relative config/). Env vars below are referenced via ${VAR}
-      # interpolation in that file.
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      LAKE_BUCKET: ${LAKE_BUCKET}
-      S3_REGION: ${S3_REGION}
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    volumes:
-      - ./docker/nessie/application.properties:/deployments/config/application.properties:ro
+      # Catalog metadata store: JDBC against our shared Postgres (db: nessie).
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:postgresql://postgres:5432/nessie
+      CATALOG_JDBC_USER: ${POSTGRES_USER}
+      CATALOG_JDBC_PASSWORD: ${POSTGRES_PASSWORD}
+      # Default warehouse — newly-created namespaces/tables land here.
+      CATALOG_WAREHOUSE: s3://${LAKE_BUCKET}/warehouse/
+      # File IO: S3 (MinIO). Double underscores in env var names become
+      # single underscores in the property; single underscores become dots.
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      # AWS SDK default credential chain picks these up — no URN games.
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION: ${S3_REGION}
     healthcheck:
-      # Nessie 0.99 moved Quarkus management endpoints (/q/health/*) to a
-      # separate port 9000. Main Iceberg REST / Nessie API stays on 19120.
-      # Port 9000 here is internal to this container — no clash with MinIO.
-      test: ["CMD", "curl", "-fsS", "http://localhost:9000/q/health/ready"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8181/v1/config"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -112,7 +119,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      nessie:
+      iceberg-catalog:
         condition: service_healthy
     ports:
       - "3000:3000"
@@ -127,7 +134,7 @@ services:
       LAKE_BUCKET: ${LAKE_BUCKET}
       S3_ENDPOINT: ${S3_ENDPOINT}
       S3_REGION: ${S3_REGION}
-      NESSIE_URI: ${NESSIE_URI}
+      ICEBERG_CATALOG_URI: ${ICEBERG_CATALOG_URI}
     volumes:
       - ./dagster_home:/opt/dagster/dagster_home
       - ./tests:/opt/dagster/app/tests:ro
@@ -151,7 +158,7 @@ services:
       LAKE_BUCKET: ${LAKE_BUCKET}
       S3_ENDPOINT: ${S3_ENDPOINT}
       S3_REGION: ${S3_REGION}
-      NESSIE_URI: ${NESSIE_URI}
+      ICEBERG_CATALOG_URI: ${ICEBERG_CATALOG_URI}
     volumes:
       - ./dagster_home:/opt/dagster/dagster_home
       - ./tests:/opt/dagster/app/tests:ro

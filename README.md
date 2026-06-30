@@ -37,7 +37,7 @@ DuckDB (embedded query engine) ── Superset (BI)
 | Object storage | MinIO (S3-compatible) |
 | File format | Parquet |
 | Table format | Apache Iceberg |
-| Catalog | Project Nessie (Iceberg REST + git-like branches) |
+| Catalog | Apache Iceberg REST reference catalog (`tabulario/iceberg-rest`) |
 | Query engine | DuckDB |
 | Visualisation | Apache Superset |
 | Metastore (everyone) | PostgreSQL |
@@ -76,7 +76,7 @@ When everything is healthy:
 |---|---|---|
 | Dagster UI | <http://localhost:3000> | — |
 | MinIO console | <http://localhost:9001> | `minioadmin` / `minioadmin` |
-| Nessie API | <http://localhost:19120> | — |
+| Iceberg REST | <http://localhost:8181/v1/config> | — |
 | Superset | <http://localhost:8088> | `admin` / `admin` |
 
 ## First run: materialise the pipeline

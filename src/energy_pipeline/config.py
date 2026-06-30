@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     minio_root_password: str = Field(default="minioadmin")
     lake_bucket: str = Field(default="lake")
 
-    # Iceberg catalog (Nessie speaks the Iceberg REST protocol)
-    nessie_uri: str = Field(default="http://nessie:19120/iceberg/main")
+    # Iceberg catalog (Apache Iceberg REST reference catalog).
+    iceberg_catalog_uri: str = Field(default="http://iceberg-catalog:8181")
 
 
 settings = Settings()
