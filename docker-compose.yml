@@ -105,12 +105,14 @@ services:
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       AWS_REGION: ${S3_REGION}
     healthcheck:
-      # tabulario/iceberg-rest is a slim Java image — no curl/wget. Use bash's
-      # /dev/tcp built-in to confirm the port is accepting connections.
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8181 || exit 1"]
+      # tabulario/iceberg-rest is a slim Java image — no curl/wget. The /dev/tcp
+      # builtin is bash-only; CMD-SHELL defaults to dash on Debian and fails
+      # silently. Invoke bash explicitly.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8181 || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 30
+      start_period: 30s
 
   dagster-webserver:
     build:
