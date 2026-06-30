@@ -144,6 +144,10 @@ services:
     volumes:
       - ./dagster_home:/opt/dagster/dagster_home
       - ./tests:/opt/dagster/app/tests:ro
+      # Live-mount source so code edits don't require an image rebuild.
+      # Image still bakes src/ at build time so the venv install resolves;
+      # this mount just overlays the running file content.
+      - ./src:/opt/dagster/app/src:ro
     command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
 
   dagster-daemon:
@@ -168,6 +172,7 @@ services:
     volumes:
       - ./dagster_home:/opt/dagster/dagster_home
       - ./tests:/opt/dagster/app/tests:ro
+      - ./src:/opt/dagster/app/src:ro
     command: ["dagster-daemon", "run", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
 
   superset-init:
