@@ -8,8 +8,6 @@ Layout: s3://{bucket}/bronze/entsoe/day_ahead/delivery_date=YYYY-MM-DD/zone=PL/r
 The Hive-style key=value path is convention; downstream tools can introspect it.
 """
 
-from __future__ import annotations
-
 from datetime import datetime
 
 import s3fs

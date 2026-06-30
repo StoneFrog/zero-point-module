@@ -3,8 +3,6 @@
 Dagster discovers everything via this single Definitions object.
 """
 
-from __future__ import annotations
-
 from dagster import (
     AssetSelection,
     Definitions,

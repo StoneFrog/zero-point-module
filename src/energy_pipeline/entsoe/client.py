@@ -7,8 +7,6 @@ visible. Swap to `entsoe-py` later if we add many more report types.
 API docs: https://transparency.entsoe.eu/content/static_content/Static%20content/web%20api/Guide.html
 """
 
-from __future__ import annotations
-
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo

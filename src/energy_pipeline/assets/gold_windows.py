@@ -7,8 +7,6 @@ Produces one row per (delivery_date, bidding_zone, window_hours) holding the
 start of the cheapest contiguous window of that length and its average price.
 """
 
-from __future__ import annotations
-
 from datetime import datetime, timezone
 
 import duckdb

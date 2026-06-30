@@ -8,8 +8,6 @@ DuckDB is embedded — no separate engine needed. If gold ever outgrows a single
 machine we swap DuckDB for Trino without changing the table or the SQL.
 """
 
-from __future__ import annotations
-
 from datetime import datetime, timezone
 
 import duckdb

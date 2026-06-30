@@ -5,8 +5,6 @@ the catalog at a test Nessie branch) without rewriting the asset code. This is
 how Dagster supports unit testing and multi-environment deploys.
 """
 
-from __future__ import annotations
-
 from functools import cached_property
 
 from dagster import ConfigurableResource

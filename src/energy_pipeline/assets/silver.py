@@ -10,8 +10,6 @@ hidden partitioning, and the ability to evolve schema/partitioning later
 without rewriting historical files.
 """
 
-from __future__ import annotations
-
 from datetime import date, datetime, timezone
 
 import pyarrow as pa

@@ -9,8 +9,6 @@ Resolution is usually PT60M (hourly) but can be PT15M (quarter-hourly, common
 in DE-LU since 2025-10).
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
