@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 import duckdb
 import pyarrow as pa
 from dagster import (
-    AssetExecutionContext,
     AssetIn,
     MetadataValue,
     Output,
@@ -107,7 +106,7 @@ def _configure_duckdb_for_minio(con: duckdb.DuckDBPyConnection) -> None:
     ),
 )
 def gold_prices_daily_stats(
-    context: AssetExecutionContext,
+    context,
     iceberg: IcebergCatalogResource,
     _silver,
 ) -> Output[None]:

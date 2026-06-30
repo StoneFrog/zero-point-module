@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 import duckdb
 import pyarrow as pa
 from dagster import (
-    AssetExecutionContext,
     AssetIn,
     MetadataValue,
     Output,
@@ -105,7 +104,7 @@ def _build_windows_sql(window_hours: tuple[int, ...]) -> str:
     ),
 )
 def gold_cheapest_windows(
-    context: AssetExecutionContext,
+    context,
     iceberg: IcebergCatalogResource,
     _silver,
 ) -> Output[None]:

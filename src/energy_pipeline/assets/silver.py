@@ -15,7 +15,6 @@ from datetime import date, datetime, timezone
 import pyarrow as pa
 import s3fs
 from dagster import (
-    AssetExecutionContext,
     AssetIn,
     MetadataValue,
     Output,
@@ -143,7 +142,7 @@ def _read_bronze_partition(delivery_day: date) -> dict[str, bytes]:
     ),
 )
 def silver_prices_hourly(
-    context: AssetExecutionContext,
+    context,
     iceberg: IcebergCatalogResource,
     _bronze,
 ) -> Output[None]:

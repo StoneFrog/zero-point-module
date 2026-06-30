@@ -12,7 +12,6 @@ from datetime import datetime
 
 import s3fs
 from dagster import (
-    AssetExecutionContext,
     DailyPartitionsDefinition,
     MetadataValue,
     Output,
@@ -48,7 +47,7 @@ def _s3_fs() -> s3fs.S3FileSystem:
     ),
 )
 def bronze_entsoe_day_ahead(
-    context: AssetExecutionContext,
+    context,
     entsoe: EntsoeResource,
 ) -> Output[dict]:
     delivery_day = datetime.fromisoformat(context.partition_key).date()
