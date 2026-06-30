@@ -74,14 +74,14 @@ When everything is healthy:
 
 | Service | URL | Login |
 |---|---|---|
-| Dagster UI | <http://localhost:3000> | — |
+| Dagster UI | <http://localhost:3001> | — (port via `DAGSTER_HOST_PORT`) |
 | MinIO console | <http://localhost:9001> | `minioadmin` / `minioadmin` |
 | Iceberg REST | <http://localhost:8181/v1/config> | — |
 | Superset | <http://localhost:8088> | `admin` / `admin` |
 
 ## First run: materialise the pipeline
 
-1. Open <http://localhost:3000>.
+1. Open <http://localhost:3001> (or whatever you set `DAGSTER_HOST_PORT` to).
 2. Go to **Assets**. You should see three assets under groups `bronze`,
    `silver`, `gold`.
 3. Click **Materialize all** for any partition (e.g. `2026-05-04`). Dagster will

@@ -124,7 +124,9 @@ services:
       iceberg-catalog:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      # Host port configurable via DAGSTER_HOST_PORT in .env (default 3001
+      # to avoid the very common 3000 conflict with React/Next/etc dev servers).
+      - "${DAGSTER_HOST_PORT:-3001}:3000"
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       POSTGRES_USER: ${POSTGRES_USER}
