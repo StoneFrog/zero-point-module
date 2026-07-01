@@ -128,6 +128,8 @@ def gold_cheapest_windows(
     con.register("silver", arrow_silver)
 
     windows_sql = _build_windows_sql(WINDOW_HOURS)
+    # DuckDB 1.1.x's DuckDBPyRelation.arrow() can also return a RecordBatchReader.
+    # fetch_arrow_table() is documented to return pa.Table.
     final = con.execute(
         f"""
         WITH all_windows AS (
@@ -154,7 +156,8 @@ def gold_cheapest_windows(
         FROM ranked
         WHERE rn = 1
         """
-    ).arrow()
+    ).fetch_arrow_table()
+    context.log.info(f"final type: {type(final).__module__}.{type(final).__name__}")
 
     computed_at = datetime.now(tz=timezone.utc).replace(microsecond=0)
     computed_at_col = pa.array(

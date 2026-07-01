@@ -161,7 +161,8 @@ def gold_prices_daily_stats(
         FROM ranked
         GROUP BY delivery_date, bidding_zone
         """
-    ).arrow()
+    ).fetch_arrow_table()
+    context.log.info(f"agg type: {type(agg).__module__}.{type(agg).__name__}")
 
     computed_at = datetime.now(tz=timezone.utc).replace(microsecond=0)
     computed_at_col = pa.array([computed_at] * agg.num_rows, type=pa.timestamp("us", tz="UTC"))
