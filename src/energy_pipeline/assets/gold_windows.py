@@ -112,8 +112,10 @@ def gold_cheapest_windows(
     catalog = iceberg.get()
 
     silver_table = catalog.load_table((NAMESPACE, "prices_hourly"))
+    # PyIceberg 0.8.x wants ISO strings, not `datetime.date`, for DateType literals.
+    delivery_day_lit = delivery_day.isoformat()
     arrow_silver = silver_table.scan(
-        row_filter=EqualTo("delivery_date", delivery_day)
+        row_filter=EqualTo("delivery_date", delivery_day_lit)
     ).to_arrow()
 
     if arrow_silver.num_rows == 0:
@@ -187,7 +189,7 @@ def gold_cheapest_windows(
             location=f"s3://{settings.lake_bucket}/gold/{GOLD_WINDOWS_TABLE_NAME}",
         )
 
-    table.overwrite(final, overwrite_filter=EqualTo("delivery_date", delivery_day))
+    table.overwrite(final, overwrite_filter=EqualTo("delivery_date", delivery_day_lit))
 
     return Output(
         None,

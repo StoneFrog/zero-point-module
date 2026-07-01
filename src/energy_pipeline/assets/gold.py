@@ -114,8 +114,10 @@ def gold_prices_daily_stats(
     catalog = iceberg.get()
 
     silver_table = catalog.load_table((NAMESPACE, "prices_hourly"))
+    # PyIceberg 0.8.x wants ISO strings, not `datetime.date`, for DateType literals.
+    delivery_day_lit = delivery_day.isoformat()
     arrow_silver = (
-        silver_table.scan(row_filter=EqualTo("delivery_date", delivery_day))
+        silver_table.scan(row_filter=EqualTo("delivery_date", delivery_day_lit))
         .to_arrow()
     )
 
@@ -183,7 +185,7 @@ def gold_prices_daily_stats(
     )
 
     gold_table = _ensure_gold_table(catalog)
-    gold_table.overwrite(agg, overwrite_filter=EqualTo("delivery_date", delivery_day))
+    gold_table.overwrite(agg, overwrite_filter=EqualTo("delivery_date", delivery_day_lit))
 
     return Output(
         None,

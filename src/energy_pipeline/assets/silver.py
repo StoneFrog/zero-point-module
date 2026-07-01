@@ -188,7 +188,9 @@ def silver_prices_hourly(
     catalog = iceberg.get()
     table = _ensure_table(catalog)
     # Atomic: delete rows for this delivery_date, then append new ones, in one snapshot.
-    table.overwrite(arrow_table, overwrite_filter=EqualTo("delivery_date", delivery_day))
+    # PyIceberg 0.8.x rejects `datetime.date` as an EqualTo literal for DateType
+    # columns — pass ISO string, which the literal factory recognises.
+    table.overwrite(arrow_table, overwrite_filter=EqualTo("delivery_date", delivery_day.isoformat()))
 
     return Output(
         None,
