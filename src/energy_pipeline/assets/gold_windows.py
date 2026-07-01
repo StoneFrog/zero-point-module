@@ -112,29 +112,14 @@ def gold_cheapest_windows(
     silver_table = catalog.load_table((NAMESPACE, "prices_hourly"))
     # PyIceberg 0.8.x wants ISO strings, not `datetime.date`, for DateType literals.
     delivery_day_lit = delivery_day.isoformat()
-    scan_result = silver_table.scan(
-        row_filter=EqualTo("delivery_date", delivery_day_lit)
-    ).to_arrow()
-    context.log.info(
-        f"scan_result type: {type(scan_result).__module__}.{type(scan_result).__name__} "
-        f"has_read_all={hasattr(scan_result, 'read_all')} "
-        f"is_table={isinstance(scan_result, pa.Table)}"
-    )
-    # Normalise anything PyIceberg returns into a pa.Table.
-    if isinstance(scan_result, pa.Table):
-        arrow_silver = scan_result
-    elif hasattr(scan_result, "read_all"):
-        arrow_silver = scan_result.read_all()
-    else:
-        # Reader-like without read_all: consume batches and rebuild.
-        batches = list(scan_result)
-        arrow_silver = (
-            pa.Table.from_batches(batches)
-            if batches
-            else pa.Table.from_pylist([], schema=None)
-        )
-
-    if arrow_silver.num_rows == 0:
+    # Use the explicit batch-reader API — it's documented to return
+    # a RecordBatchReader and we manually materialise into a Table.
+    # Avoids .to_arrow()'s ambiguous return type in PyIceberg 0.8.
+    scan = silver_table.scan(row_filter=EqualTo("delivery_date", delivery_day_lit))
+    batches = list(scan.to_arrow_batch_reader())
+    context.log.info(f"silver batches: {len(batches)}")
+    arrow_silver = pa.Table.from_batches(batches) if batches else None
+    if arrow_silver is None or arrow_silver.num_rows == 0:
         context.log.warning(f"Silver had no rows for {delivery_day}; skipping windows.")
         return Output(None, metadata={"rows_written": MetadataValue.int(0)})
 
