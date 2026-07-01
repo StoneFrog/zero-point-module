@@ -15,7 +15,6 @@ from datetime import date, datetime, timezone
 import pyarrow as pa
 import s3fs
 from dagster import (
-    AssetIn,
     MetadataValue,
     Output,
     asset,
@@ -132,19 +131,21 @@ def _read_bronze_partition(delivery_day: date) -> dict[str, bytes]:
 
 @asset(
     partitions_def=daily_partitions,
-    ins={"_bronze": AssetIn(bronze_entsoe_day_ahead.key)},
+    # deps= (not ins=): the real "output" of bronze is XML in MinIO, not the
+    # Output(dict) we return. Using deps avoids Dagster's I/O manager trying
+    # to load bronze's None-typed return from disk.
+    deps=[bronze_entsoe_day_ahead],
     group_name="silver",
     compute_kind="iceberg",
     description=(
         "Hourly day-ahead prices, parsed from bronze XML and stored as an Iceberg table. "
-        "Partitioned by month(ts_utc) + bidding_zone. Re-running a partition is a "
+        "Partitioned by day(ts_utc) + bidding_zone. Re-running a partition is a "
         "transactional upsert (overwrite by delivery_date)."
     ),
 )
 def silver_prices_hourly(
     context,
     iceberg: IcebergCatalogResource,
-    _bronze,
 ) -> Output[None]:
     delivery_day = datetime.fromisoformat(context.partition_key).date()
 

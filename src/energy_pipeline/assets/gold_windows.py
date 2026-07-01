@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 import duckdb
 import pyarrow as pa
 from dagster import (
-    AssetIn,
     MetadataValue,
     Output,
     asset,
@@ -94,7 +93,7 @@ def _build_windows_sql(window_hours: tuple[int, ...]) -> str:
 
 @asset(
     partitions_def=daily_partitions,
-    ins={"_silver": AssetIn(silver_prices_hourly.key)},
+    deps=[silver_prices_hourly],
     group_name="gold",
     compute_kind="duckdb",
     description=(
@@ -106,7 +105,6 @@ def _build_windows_sql(window_hours: tuple[int, ...]) -> str:
 def gold_cheapest_windows(
     context,
     iceberg: IcebergCatalogResource,
-    _silver,
 ) -> Output[None]:
     delivery_day = datetime.fromisoformat(context.partition_key).date()
     catalog = iceberg.get()
