@@ -112,9 +112,13 @@ def gold_cheapest_windows(
     silver_table = catalog.load_table((NAMESPACE, "prices_hourly"))
     # PyIceberg 0.8.x wants ISO strings, not `datetime.date`, for DateType literals.
     delivery_day_lit = delivery_day.isoformat()
-    arrow_silver = silver_table.scan(
+    scan_result = silver_table.scan(
         row_filter=EqualTo("delivery_date", delivery_day_lit)
     ).to_arrow()
+    # PyIceberg 0.8.1's to_arrow() can return a RecordBatchReader; materialise.
+    arrow_silver = (
+        scan_result.read_all() if isinstance(scan_result, pa.RecordBatchReader) else scan_result
+    )
 
     if arrow_silver.num_rows == 0:
         context.log.warning(f"Silver had no rows for {delivery_day}; skipping windows.")

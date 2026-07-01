@@ -115,9 +115,13 @@ def gold_prices_daily_stats(
     silver_table = catalog.load_table((NAMESPACE, "prices_hourly"))
     # PyIceberg 0.8.x wants ISO strings, not `datetime.date`, for DateType literals.
     delivery_day_lit = delivery_day.isoformat()
+    scan_result = silver_table.scan(
+        row_filter=EqualTo("delivery_date", delivery_day_lit)
+    ).to_arrow()
+    # PyIceberg 0.8.1's to_arrow() can return a RecordBatchReader rather than a
+    # pa.Table on some paths; materialise to a Table so `.num_rows` works.
     arrow_silver = (
-        silver_table.scan(row_filter=EqualTo("delivery_date", delivery_day_lit))
-        .to_arrow()
+        scan_result.read_all() if isinstance(scan_result, pa.RecordBatchReader) else scan_result
     )
 
     if arrow_silver.num_rows == 0:
