@@ -118,11 +118,13 @@ def gold_prices_daily_stats(
     scan_result = silver_table.scan(
         row_filter=EqualTo("delivery_date", delivery_day_lit)
     ).to_arrow()
-    # PyIceberg 0.8.1's to_arrow() can return a RecordBatchReader rather than a
-    # pa.Table on some paths; materialise to a Table so `.num_rows` works.
-    arrow_silver = (
-        scan_result.read_all() if isinstance(scan_result, pa.RecordBatchReader) else scan_result
-    )
+    # PyIceberg 0.8.1's to_arrow() can return a pyarrow.lib.RecordBatchReader
+    # (C class) rather than a pa.Table. Duck-type via `read_all` — matches every
+    # pyarrow batch-reader flavour regardless of class identity.
+    if hasattr(scan_result, "read_all"):
+        arrow_silver = scan_result.read_all()
+    else:
+        arrow_silver = scan_result
 
     if arrow_silver.num_rows == 0:
         context.log.warning(f"Silver had no rows for {delivery_day}; skipping gold.")
