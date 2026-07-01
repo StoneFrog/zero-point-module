@@ -131,6 +131,9 @@ services:
       - "${DAGSTER_HOST_PORT:-3001}:3000"
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
+      # Prepend the mounted src/ to sys.path so live edits win over the copy
+      # that uv sync installed into site-packages at image build time.
+      PYTHONPATH: /opt/dagster/app/src
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN}
@@ -159,6 +162,9 @@ services:
         condition: service_started
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
+      # Prepend the mounted src/ to sys.path so live edits win over the copy
+      # that uv sync installed into site-packages at image build time.
+      PYTHONPATH: /opt/dagster/app/src
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN}
