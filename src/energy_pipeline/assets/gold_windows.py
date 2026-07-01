@@ -115,12 +115,24 @@ def gold_cheapest_windows(
     scan_result = silver_table.scan(
         row_filter=EqualTo("delivery_date", delivery_day_lit)
     ).to_arrow()
-    # PyIceberg 0.8.1's to_arrow() can return a pyarrow.lib.RecordBatchReader
-    # (C class). Duck-type via `read_all` — matches every reader flavour.
-    if hasattr(scan_result, "read_all"):
+    context.log.info(
+        f"scan_result type: {type(scan_result).__module__}.{type(scan_result).__name__} "
+        f"has_read_all={hasattr(scan_result, 'read_all')} "
+        f"is_table={isinstance(scan_result, pa.Table)}"
+    )
+    # Normalise anything PyIceberg returns into a pa.Table.
+    if isinstance(scan_result, pa.Table):
+        arrow_silver = scan_result
+    elif hasattr(scan_result, "read_all"):
         arrow_silver = scan_result.read_all()
     else:
-        arrow_silver = scan_result
+        # Reader-like without read_all: consume batches and rebuild.
+        batches = list(scan_result)
+        arrow_silver = (
+            pa.Table.from_batches(batches)
+            if batches
+            else pa.Table.from_pylist([], schema=None)
+        )
 
     if arrow_silver.num_rows == 0:
         context.log.warning(f"Silver had no rows for {delivery_day}; skipping windows.")
