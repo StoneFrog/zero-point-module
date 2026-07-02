@@ -9,11 +9,9 @@ RUN pip install --no-cache-dir \
     duckdb-engine==0.13.4 \
     pyiceberg==0.8.1
 
-# Pre-install the DuckDB extensions Superset will need at query time.
-# iceberg is a community extension, so autoinstall_known_extensions doesn't
-# cover it; httpfs is core but bundling both avoids first-query latency
-# from the CDN fetch.
-# Install as the superset user so the extensions cache lives in that user's
-# home dir and is found at runtime.
+# Pre-install httpfs (a "known" DuckDB extension) so the first S3 query is fast.
+# We intentionally do NOT pre-install iceberg — it's a community extension that
+# doesn't publish linux_arm64 builds for DuckDB 1.1.3, which fails Apple Silicon
+# hosts. Install it once at runtime via SQL Lab (see LEARNING.md).
 USER superset
-RUN python -c "import duckdb; c=duckdb.connect(); c.execute('INSTALL httpfs'); c.execute('INSTALL iceberg FROM community'); c.close()"
+RUN python -c "import duckdb; c=duckdb.connect(); c.execute('INSTALL httpfs'); c.close()"
