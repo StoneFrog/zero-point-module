@@ -14,23 +14,37 @@ def s3_fs() -> s3fs.S3FileSystem:
 
 
 def write_version_hint(table) -> int:
-    """Write metadata/version-hint.text so Hive-style scanners can find the
-    current metadata without going through the REST catalog.
+    """Make an Iceberg table readable by directory-mode / Hive-style scanners.
 
-    Modern REST-catalog Iceberg tables (like ours) skip this file — the
-    catalog service is the source of truth. But DuckDB's iceberg extension
-    (and Trino's Hive catalog compat mode) still look for it when scanning
-    a table by S3 path. Writing it is a cheap belt-and-braces so both
-    catalog-aware and directory-mode readers work.
+    Two files, both in the table's metadata/ prefix:
 
-    Returns the version number that was written.
+    - `version-hint.text`  — contains the current metadata version integer.
+    - `v<version>.metadata.json` — a copy of the current metadata JSON at a
+      filename DuckDB's iceberg extension recognises. PyIceberg names its
+      canonical file "<zero-padded-version>-<uuid>.metadata.json", which
+      neither DuckDB nor Hive-style tools can find via the version-hint.
+
+    Modern REST-catalog Iceberg readers (Trino REST, Spark REST, PyIceberg)
+    don't need any of this — the catalog service tells them the current
+    metadata pointer. This is purely a bridge so tools that don't speak the
+    REST catalog protocol can still scan the table via its S3 path.
+
+    Returns the version number written.
     """
-    metadata_location = table.metadata_location  # e.g. s3://…/metadata/00042-<uuid>.metadata.json
+    metadata_location = table.metadata_location  # s3://…/metadata/00042-<uuid>.metadata.json
     prefix, filename = metadata_location.rsplit("/", 1)
-    metadata_dir_no_scheme = prefix.replace("s3://", "", 1)
-    # PyIceberg names metadata files as "<zero-padded-version>-<uuid>.metadata.json".
+    metadata_dir = prefix.replace("s3://", "", 1)
     version = int(filename.split("-", 1)[0])
     fs = s3_fs()
-    with fs.open(f"{metadata_dir_no_scheme}/version-hint.text", "wb") as f:
+
+    # version-hint.text
+    with fs.open(f"{metadata_dir}/version-hint.text", "wb") as f:
         f.write(str(version).encode("utf-8"))
+
+    # v<version>.metadata.json — a same-content copy of the current metadata
+    src_key = metadata_location.replace("s3://", "", 1)
+    dst_key = f"{metadata_dir}/v{version}.metadata.json"
+    with fs.open(src_key, "rb") as sf, fs.open(dst_key, "wb") as df:
+        df.write(sf.read())
+
     return version
