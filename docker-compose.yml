@@ -133,7 +133,8 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       # Prepend the mounted src/ to sys.path so live edits win over the copy
       # that uv sync installed into site-packages at image build time.
-      PYTHONPATH: /opt/dagster/app/src
+      # Also include scripts/ so one-off maintenance scripts import as modules.
+      PYTHONPATH: /opt/dagster/app/src:/opt/dagster/app
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN}
@@ -151,6 +152,7 @@ services:
       # Image still bakes src/ at build time so the venv install resolves;
       # this mount just overlays the running file content.
       - ./src:/opt/dagster/app/src:ro
+      - ./scripts:/opt/dagster/app/scripts:ro
     command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
 
   dagster-daemon:
@@ -164,7 +166,8 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       # Prepend the mounted src/ to sys.path so live edits win over the copy
       # that uv sync installed into site-packages at image build time.
-      PYTHONPATH: /opt/dagster/app/src
+      # Also include scripts/ so one-off maintenance scripts import as modules.
+      PYTHONPATH: /opt/dagster/app/src:/opt/dagster/app
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN}
@@ -179,6 +182,7 @@ services:
       - ./dagster_home:/opt/dagster/dagster_home
       - ./tests:/opt/dagster/app/tests:ro
       - ./src:/opt/dagster/app/src:ro
+      - ./scripts:/opt/dagster/app/scripts:ro
     command: ["dagster-daemon", "run", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
 
   superset-init:
