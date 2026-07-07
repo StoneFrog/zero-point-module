@@ -1,0 +1,5 @@
+# Where Dagster finds the user code. Loaded by webserver and daemon.
+load_from:
+  - python_module:
+      module_name: energy_pipeline.definitions
+      working_directory: /opt/dagster/app

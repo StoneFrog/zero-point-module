@@ -1,0 +1,1 @@
+"""Energy price lakehouse pipeline."""

@@ -1,0 +1,33 @@
+# Dagster instance config. Tells the webserver and daemon where to persist
+# state. Postgres-backed so multiple processes (webserver + daemon) share state
+# and survive container restarts.
+#
+# Env vars are interpolated by Dagster at boot.
+
+storage:
+  postgres:
+    postgres_db:
+      hostname: postgres
+      username:
+        env: POSTGRES_USER
+      password:
+        env: POSTGRES_PASSWORD
+      db_name: dagster
+      port: 5432
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 4
+
+run_launcher:
+  module: dagster.core.launcher
+  class: DefaultRunLauncher
+
+scheduler:
+  module: dagster.core.scheduler
+  class: DagsterDaemonScheduler
+
+telemetry:
+  enabled: false

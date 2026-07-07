@@ -1,0 +1,245 @@
+# Local lakehouse stack for the energy-price pipeline.
+#
+# Services:
+#   postgres          shared metastore (dagster + catalog + superset DBs)
+#   minio             S3-compatible object storage (the lake)
+#   minio-init        one-shot: create the lake bucket
+#   iceberg-catalog   Apache Iceberg REST catalog, Postgres-backed
+#   dagster-webserver UI on :3000
+#   dagster-daemon    schedules + sensors
+#   superset-init     one-shot: db upgrade + admin user
+#   superset          BI UI on :8088
+#
+# Bring it up:    docker compose up -d
+# Logs:           docker compose logs -f <service>
+# Stop + clean:   docker compose down -v   (deletes all data)
+
+name: energy-pipeline
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-01-17T23-25-50Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing local/${LAKE_BUCKET} &&
+        mc anonymous set download local/${LAKE_BUCKET} &&
+        echo "MinIO bucket '${LAKE_BUCKET}' ready."
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKE_BUCKET: ${LAKE_BUCKET}
+    restart: "no"
+
+  iceberg-catalog:
+    # Apache Iceberg REST reference catalog. Single-process, Postgres-backed
+    # metadata. We swapped from Nessie 0.99 because its required secret-URN
+    # indirection couldn't be configured via env vars or a mounted
+    # application.properties (the `access-key` property is a URN-only String
+    # in Nessie's schema and has no inline credentials form). The Iceberg
+    # REST protocol is the same; PyIceberg connects identically.
+    # Trade-off: lose Nessie's git-like branching — revisit later with Polaris.
+    image: tabulario/iceberg-rest:1.6.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "8181:8181"
+    environment:
+      # Catalog metadata store: JDBC against our shared Postgres (db: nessie).
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:postgresql://postgres:5432/nessie
+      CATALOG_JDBC_USER: ${POSTGRES_USER}
+      CATALOG_JDBC_PASSWORD: ${POSTGRES_PASSWORD}
+      # Default warehouse — newly-created namespaces/tables land here.
+      CATALOG_WAREHOUSE: s3://${LAKE_BUCKET}/warehouse/
+      # File IO: S3 (MinIO). Double underscores in env var names become
+      # single underscores in the property; single underscores become dots.
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      # AWS SDK default credential chain picks these up — no URN games.
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION: ${S3_REGION}
+    healthcheck:
+      # tabulario/iceberg-rest is a slim Java image — no curl/wget. The /dev/tcp
+      # builtin is bash-only; CMD-SHELL defaults to dash on Debian and fails
+      # silently. Invoke bash explicitly.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8181 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  dagster-webserver:
+    build:
+      context: .
+      dockerfile: docker/dagster/Dockerfile
+    image: energy-pipeline/dagster:dev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      iceberg-catalog:
+        condition: service_healthy
+    ports:
+      # Host port configurable via DAGSTER_HOST_PORT in .env (default 3001
+      # to avoid the very common 3000 conflict with React/Next/etc dev servers).
+      - "${DAGSTER_HOST_PORT:-3001}:3000"
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      # Prepend the mounted src/ to sys.path so live edits win over the copy
+      # that uv sync installed into site-packages at image build time.
+      # Also include scripts/ so one-off maintenance scripts import as modules.
+      PYTHONPATH: /opt/dagster/app/src:/opt/dagster/app
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN}
+      ENTSOE_USE_FIXTURE: ${ENTSOE_USE_FIXTURE}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKE_BUCKET: ${LAKE_BUCKET}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      ICEBERG_CATALOG_URI: ${ICEBERG_CATALOG_URI}
+    volumes:
+      - ./dagster_home:/opt/dagster/dagster_home
+      - ./tests:/opt/dagster/app/tests:ro
+      # Live-mount source so code edits don't require an image rebuild.
+      # Image still bakes src/ at build time so the venv install resolves;
+      # this mount just overlays the running file content.
+      - ./src:/opt/dagster/app/src:ro
+      - ./scripts:/opt/dagster/app/scripts:ro
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+
+  dagster-daemon:
+    image: energy-pipeline/dagster:dev
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      dagster-webserver:
+        condition: service_started
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      # Prepend the mounted src/ to sys.path so live edits win over the copy
+      # that uv sync installed into site-packages at image build time.
+      # Also include scripts/ so one-off maintenance scripts import as modules.
+      PYTHONPATH: /opt/dagster/app/src:/opt/dagster/app
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN}
+      ENTSOE_USE_FIXTURE: ${ENTSOE_USE_FIXTURE}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKE_BUCKET: ${LAKE_BUCKET}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      ICEBERG_CATALOG_URI: ${ICEBERG_CATALOG_URI}
+    volumes:
+      - ./dagster_home:/opt/dagster/dagster_home
+      - ./tests:/opt/dagster/app/tests:ro
+      - ./src:/opt/dagster/app/src:ro
+      - ./scripts:/opt/dagster/app/scripts:ro
+    command: ["dagster-daemon", "run", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+
+  superset-init:
+    build:
+      context: .
+      dockerfile: docker/superset/Dockerfile
+    image: energy-pipeline/superset:dev
+    # Force amd64 emulation because the DuckDB `iceberg` community extension
+    # doesn't publish a linux_arm64 build for 1.1.3. On Apple Silicon this
+    # runs Superset under Rosetta — slower but functional. Remove this line
+    # once an arm64 iceberg build (or a Postgres serving layer) is in place.
+    platform: linux/amd64
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+      SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL}
+    volumes:
+      - ./docker/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        # First-time bootstrap: db schema + admin user. Idempotent.
+        superset db upgrade
+        superset fab create-admin \
+          --username "$$SUPERSET_ADMIN_USER" \
+          --firstname Admin --lastname User \
+          --email "$$SUPERSET_ADMIN_EMAIL" \
+          --password "$$SUPERSET_ADMIN_PASSWORD" || true
+        superset init
+        echo "Superset initialised."
+    restart: "no"
+
+  superset:
+    image: energy-pipeline/superset:dev
+    platform: linux/amd64
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./docker/superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+
+volumes:
+  postgres_data:
+  minio_data:
