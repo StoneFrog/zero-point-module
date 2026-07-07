@@ -38,6 +38,7 @@ from energy_pipeline.assets.bronze import bronze_entsoe_day_ahead, daily_partiti
 from energy_pipeline.config import settings
 from energy_pipeline.entsoe.parser import parse_day_ahead_xml
 from energy_pipeline.entsoe.zones import ZONES_BY_CODE
+from energy_pipeline.iceberg_utils import write_version_hint
 from energy_pipeline.resources import IcebergCatalogResource
 
 NAMESPACE = "energy"
@@ -192,6 +193,8 @@ def silver_prices_hourly(
     # PyIceberg 0.8.x rejects `datetime.date` as an EqualTo literal for DateType
     # columns — pass ISO string, which the literal factory recognises.
     table.overwrite(arrow_table, overwrite_filter=EqualTo("delivery_date", delivery_day.isoformat()))
+    table = table.refresh()
+    version = write_version_hint(table)
 
     return Output(
         None,
@@ -200,6 +203,7 @@ def silver_prices_hourly(
             "rows_written": MetadataValue.int(len(rows)),
             "zones_parsed": MetadataValue.int(len(bronze_files) - len(parse_failures)),
             "parse_failures": MetadataValue.json(parse_failures),
-            "snapshot_id": MetadataValue.text(str(table.refresh().current_snapshot().snapshot_id)),
+            "snapshot_id": MetadataValue.text(str(table.current_snapshot().snapshot_id)),
+            "version_hint": MetadataValue.int(version),
         },
     )

@@ -35,6 +35,7 @@ from energy_pipeline.assets.bronze import daily_partitions
 from energy_pipeline.assets.gold import _configure_duckdb_for_minio
 from energy_pipeline.assets.silver import NAMESPACE, silver_prices_hourly
 from energy_pipeline.config import settings
+from energy_pipeline.iceberg_utils import write_version_hint
 from energy_pipeline.resources import IcebergCatalogResource
 
 GOLD_WINDOWS_TABLE_NAME = "prices_cheapest_windows"
@@ -194,6 +195,8 @@ def gold_cheapest_windows(
         )
 
     table.overwrite(final, overwrite_filter=EqualTo("delivery_date", delivery_day_lit))
+    table = table.refresh()
+    version = write_version_hint(table)
 
     return Output(
         None,
@@ -201,8 +204,7 @@ def gold_cheapest_windows(
             "delivery_date": MetadataValue.text(delivery_day.isoformat()),
             "rows_written": MetadataValue.int(final.num_rows),
             "window_sizes": MetadataValue.json(list(WINDOW_HOURS)),
-            "snapshot_id": MetadataValue.text(
-                str(table.refresh().current_snapshot().snapshot_id)
-            ),
+            "snapshot_id": MetadataValue.text(str(table.current_snapshot().snapshot_id)),
+            "version_hint": MetadataValue.int(version),
         },
     )

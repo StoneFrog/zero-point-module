@@ -38,6 +38,7 @@ from energy_pipeline.assets.silver import (
     silver_prices_hourly,
 )
 from energy_pipeline.config import settings
+from energy_pipeline.iceberg_utils import write_version_hint
 from energy_pipeline.resources import IcebergCatalogResource
 
 GOLD_TABLE_NAME = "prices_daily_stats"
@@ -188,14 +189,15 @@ def gold_prices_daily_stats(
 
     gold_table = _ensure_gold_table(catalog)
     gold_table.overwrite(agg, overwrite_filter=EqualTo("delivery_date", delivery_day_lit))
+    gold_table = gold_table.refresh()
+    version = write_version_hint(gold_table)
 
     return Output(
         None,
         metadata={
             "delivery_date": MetadataValue.text(delivery_day.isoformat()),
             "rows_written": MetadataValue.int(agg.num_rows),
-            "snapshot_id": MetadataValue.text(
-                str(gold_table.refresh().current_snapshot().snapshot_id)
-            ),
+            "snapshot_id": MetadataValue.text(str(gold_table.current_snapshot().snapshot_id)),
+            "version_hint": MetadataValue.int(version),
         },
     )
