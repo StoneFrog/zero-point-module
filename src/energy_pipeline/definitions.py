@@ -11,17 +11,23 @@ from dagster import (
     load_assets_from_modules,
 )
 
-from energy_pipeline.assets import bronze, gold, gold_windows, silver
+from energy_pipeline.assets import bronze, gold, gold_windows, maintenance, silver
+from energy_pipeline.assets.maintenance import lake_file_health_job, lake_file_health_schedule
 from energy_pipeline.config import settings
 from energy_pipeline.resources import EntsoeResource, IcebergCatalogResource
+from energy_pipeline.sensors import pipeline_failure_sensor
 
 all_assets = load_assets_from_modules([bronze, silver, gold, gold_windows])
+maintenance_assets = load_assets_from_modules([maintenance])
 
 # One job that materialises bronze -> silver -> gold for the latest partition.
 # Dagster figures out the order from the asset dependency graph.
+# Scoped to `all_assets` (not AssetSelection.all()) so it doesn't try to pull
+# in the unpartitioned maintenance assets below — those run on their own
+# schedule via lake_file_health_job.
 daily_pipeline_job = define_asset_job(
     name="daily_pipeline",
-    selection=AssetSelection.all(),
+    selection=AssetSelection.assets(*all_assets),
     description="End-to-end refresh: ENTSO-E -> bronze -> silver -> gold for one delivery day.",
 )
 
@@ -36,9 +42,10 @@ daily_schedule = ScheduleDefinition(
 )
 
 defs = Definitions(
-    assets=all_assets,
-    jobs=[daily_pipeline_job],
-    schedules=[daily_schedule],
+    assets=[*all_assets, *maintenance_assets],
+    jobs=[daily_pipeline_job, lake_file_health_job],
+    schedules=[daily_schedule, lake_file_health_schedule],
+    sensors=[pipeline_failure_sensor],
     resources={
         "entsoe": EntsoeResource(use_fixture=settings.entsoe_use_fixture),
         "iceberg": IcebergCatalogResource(),

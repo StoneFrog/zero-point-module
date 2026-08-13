@@ -31,5 +31,12 @@ class Settings(BaseSettings):
     # Iceberg catalog (Apache Iceberg REST reference catalog).
     iceberg_catalog_uri: str = Field(default="http://iceberg-catalog:8181")
 
+    # Operational alerting (Phase 2). Optional generic webhook URL, POSTed a
+    # small JSON payload on pipeline-run failure. Works as-is with Slack
+    # incoming webhooks (which accept a top-level "text" field); left empty
+    # by default so the pipeline runs with no external dependency — failures
+    # still show up in the Dagster UI and daemon logs either way.
+    alert_webhook_url: str = Field(default="")
+
 
 settings = Settings()

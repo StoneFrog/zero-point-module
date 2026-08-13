@@ -12,6 +12,9 @@ from datetime import datetime
 
 import s3fs
 from dagster import (
+    AssetCheckResult,
+    AssetCheckSeverity,
+    AssetCheckSpec,
     DailyPartitionsDefinition,
     MetadataValue,
     Output,
@@ -20,6 +23,7 @@ from dagster import (
 
 from energy_pipeline.config import settings
 from energy_pipeline.entsoe.zones import ZONES
+from energy_pipeline.quality import REQUIRED_ZONES, check_zone_completeness
 from energy_pipeline.resources import EntsoeResource
 
 # Backfill horizon: ENTSO-E day-ahead data goes back to ~2015. Starting from
@@ -45,11 +49,22 @@ def _s3_fs() -> s3fs.S3FileSystem:
         "Raw ENTSO-E day-ahead price XML responses. One XML file per (delivery_date, "
         "zone). Stored exactly as received from the API; never mutated."
     ),
+    check_specs=[
+        AssetCheckSpec(
+            name="zone_completeness",
+            asset="bronze_entsoe_day_ahead",
+            description=(
+                f"Required zones {REQUIRED_ZONES} must be present in bronze for the "
+                "partition. WARN, not blocking: a single zone outage upstream "
+                "shouldn't stop the run."
+            ),
+        )
+    ],
 )
 def bronze_entsoe_day_ahead(
     context,
     entsoe: EntsoeResource,
-) -> Output[dict]:
+):
     delivery_day = datetime.fromisoformat(context.partition_key).date()
     client = entsoe.client()
     fs = _s3_fs()
@@ -75,7 +90,19 @@ def bronze_entsoe_day_ahead(
         written.append(zone.code)
         total_bytes += len(xml_bytes)
 
-    return Output(
+    passed, missing_required = check_zone_completeness(written)
+    yield AssetCheckResult(
+        check_name="zone_completeness",
+        passed=passed,
+        severity=AssetCheckSeverity.WARN,
+        metadata={
+            "zones_written": MetadataValue.int(len(written)),
+            "zones_failed": MetadataValue.int(len(failed)),
+            "missing_required_zones": MetadataValue.json(missing_required),
+        },
+    )
+
+    yield Output(
         value={
             "delivery_date": delivery_day.isoformat(),
             "zones_written": written,

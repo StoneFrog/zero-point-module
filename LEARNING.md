@@ -147,6 +147,67 @@ Our write pattern is "overwrite by `delivery_date`". Day partitioning means
 each daily run rewrites exactly one tiny file per zone — no write amplification.
 The trade is many small files; we'll add periodic compaction in Phase 2.
 
+### Why co-located asset checks instead of separate `@asset_check` functions? (Phase 2)
+Dagster supports two shapes for a check: a standalone `@asset_check(asset=X)`
+function, or a check declared via `check_specs=` on `@asset` itself, with the
+asset function `yield`ing both its `Output` and its `AssetCheckResult`s. We
+used the co-located form throughout (`bronze.py`, `silver.py`, `gold.py`,
+`maintenance.py`). Reasons: it reuses values the asset already computed (no
+re-scanning bronze/silver to check what the asset just wrote), and it
+guarantees the check runs against the exact partition the asset just
+materialised rather than depending on partition-context being threaded
+through a separately-scheduled check run.
+
+Severity and blocking are calibrated per check, not uniform: bronze's
+`zone_completeness` is WARN (a single zone outage shouldn't stop the run —
+matches the existing "log a warning and continue" pattern for per-zone
+fetch failures). silver's `row_integrity` is ERROR and `blocking=True` (a
+duplicate key or null price breaks the Iceberg schema's own guarantees, so
+gold shouldn't compute on top of it — but the write to Iceberg still
+happens; the check gates the *next* step in the same run, not silver's own
+materialization, staying consistent with "failures are recoverable, re-run
+the partition"). gold's `stats_consistency` is WARN (an arithmetic
+inconsistency here is a bug worth flagging, but nothing downstream depends
+on it — `gold_cheapest_windows` reads from silver directly, not from this
+table).
+
+### Why file-count monitoring instead of automatic Iceberg compaction? (Phase 2)
+LEARNING.md's Phase 1 note on day partitioning flagged "many small files"
+as a known tradeoff, with compaction planned for Phase 2. We looked at
+implementing it and backed off to monitoring-only, for a specific reason:
+PyIceberg 0.8.1 (pinned in `pyproject.toml`) has no native
+`rewrite_data_files`/compaction action — the feature has been an open
+request upstream (`apache/iceberg-python#1092`) and still isn't part of the
+0.9.0 release. Two ways to actually shrink file count exist in principle:
+
+1. **Native compaction action** — not available in our pinned version.
+2. **Hand-rolled**: evolve the partition spec to something coarser (e.g.
+   month instead of day) and rewrite historical data under the new spec.
+   We didn't ship this: our daily upsert pattern
+   (`overwrite(df, overwrite_filter=EqualTo("delivery_date", day))`) relies
+   on the filter aligning exactly with a file's partition boundary — day
+   partitioning is what makes that safe. Coarsening the partition breaks
+   that alignment for the *existing* daily-overwrite assets unless every
+   write is also restructured to buffer a full month, a much bigger change
+   than "operational hardening" scope, and one we have no live catalog here
+   to test against.
+
+So Phase 2 ships `assets/maintenance.py`'s `lake_file_health` asset instead:
+a weekly, direct S3 listing of each managed table's `data/` prefix, reporting
+file count and average file size as Dagster asset metadata, with a WARN
+check when a table's average file size drops under ~1MB. It doesn't fix
+anything — it gives a human the numbers to decide when a manual rebuild (or
+a pyiceberg version bump, once the native action ships) is worth doing.
+
+### Why a generic webhook for alerting instead of a Slack integration? (Phase 2)
+`sensors.py`'s `pipeline_failure_sensor` always logs failures (visible in the
+Dagster UI and daemon logs with no configuration). It optionally POSTs a
+`{"text": "..."}` JSON payload to `ALERT_WEBHOOK_URL` if set — that shape
+matches Slack's incoming-webhook format directly, but doesn't require a
+Slack app, OAuth scopes, or a dedicated `dagster-slack` dependency for a repo
+that may not have Slack at all. Swap in a real integration later by pointing
+the same env var at whatever ingests generic JSON webhooks.
+
 ### Why a serving layer for Home Assistant (Phase 5)?
 The lake is great for analytics but slow-cold and coupled to schema choices.
 A small Postgres "serving table" published from gold gives Home Assistant a
@@ -176,9 +237,12 @@ Things we explicitly accepted as good-enough for Phase 1 and will revisit:
   Dagster shape is `MultiPartitionsDefinition` on `(delivery_date,
   bidding_zone)`, giving native per-zone retry, backfill, and failure
   observability — at the cost of ~14k partitions/year per asset in the UI.
-- **AssetCheck gates**. Add a Dagster asset check that fails materialization
-  if fewer than N zones succeeded, or if a required zone (PL, DE_LU) is
-  missing. Currently logged as warnings only.
+- ~~**AssetCheck gates**~~ — done in Phase 2. `bronze_entsoe_day_ahead` has a
+  `zone_completeness` check (WARN if PL or DE_LU is missing);
+  `silver_prices_hourly` has a blocking `row_integrity` check (duplicate
+  keys, null prices, implausible interval counts); `gold_prices_daily_stats`
+  has a `stats_consistency` sanity check. See `quality.py` and the "Why
+  co-located asset checks" note above.
 - **Tie-handling for cheapest/peak hour**. `gold_prices_daily_stats` picks the
   earliest hour on ties via `ORDER BY price ASC, ts_utc ASC` — silently
   arbitrary. The `gold_cheapest_windows` asset addresses the common
@@ -194,8 +258,12 @@ Things we explicitly accepted as good-enough for Phase 1 and will revisit:
   to include it we'd need to either pre-aggregate to hourly or compute
   windows in interval units rather than hours.
 - **Iceberg compaction**. Day-level partitioning produces many small Parquet
-  files. Phase 2 adds a periodic `rewrite_data_files` job that consolidates
-  small files into larger ones, improving long-range query performance.
+  files. Phase 2 added *monitoring* (`lake_file_health`, weekly) but not
+  automatic compaction — PyIceberg 0.8.1 has no native `rewrite_data_files`
+  action to build on. See the "Why file-count monitoring instead of
+  automatic Iceberg compaction" note above for the full reasoning and what
+  would unblock this (a pyiceberg upgrade once the action ships, or a
+  partition-spec-evolution rewrite of the daily-overwrite assets).
 
 ## Reading the code in order
 
@@ -212,8 +280,13 @@ If you're tracing the data path:
    stats, upsert into Iceberg.
 7. `src/energy_pipeline/resources.py` — how Dagster injects the ENTSO-E
    client and the Iceberg catalog.
-8. `src/energy_pipeline/definitions.py` — wires everything together with a
-   schedule.
+8. `src/energy_pipeline/quality.py` — pure data-quality checks (Phase 2),
+   called from bronze/silver/gold via `check_specs=`.
+9. `src/energy_pipeline/assets/maintenance.py` — small-file monitoring
+   (Phase 2); `src/energy_pipeline/sensors.py` — run-failure alerting
+   (Phase 2).
+10. `src/energy_pipeline/definitions.py` — wires everything together with
+    schedules and a sensor.
 
 ## Operational mental model
 
@@ -229,8 +302,8 @@ If you're tracing the data path:
 
 | Phase | Goal | What lands |
 |---|---|---|
-| 1 (this) | End-to-end ingest + lakehouse + dashboards | bronze/silver/gold, Iceberg+Nessie, Superset |
-| 2 | Operational hardening | Iceberg compaction, schema tests, monitoring/alerting |
+| 1 | End-to-end ingest + lakehouse + dashboards | bronze/silver/gold, Iceberg REST catalog, Superset |
+| 2 (this) | Operational hardening | AssetCheck data-quality gates, small-file monitoring (compaction itself deferred — see notes above), run-failure alerting |
 | 3 | dbt | Replace gold-layer Python with dbt models; column-level lineage |
 | 4 | Lineage emission | OpenLineage events from Dagster+dbt; optional DataHub |
 | 5 | Smart-home interface | Postgres serving layer, FastAPI, auth, Home Assistant integration |

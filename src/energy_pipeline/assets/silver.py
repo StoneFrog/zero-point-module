@@ -15,6 +15,9 @@ from datetime import date, datetime, timezone
 import pyarrow as pa
 import s3fs
 from dagster import (
+    AssetCheckResult,
+    AssetCheckSeverity,
+    AssetCheckSpec,
     MetadataValue,
     Output,
     asset,
@@ -39,6 +42,7 @@ from energy_pipeline.config import settings
 from energy_pipeline.entsoe.parser import parse_day_ahead_xml
 from energy_pipeline.entsoe.zones import ZONES_BY_CODE
 from energy_pipeline.iceberg_utils import write_version_hint
+from energy_pipeline.quality import check_silver_row_integrity
 from energy_pipeline.resources import IcebergCatalogResource
 
 NAMESPACE = "energy"
@@ -143,17 +147,34 @@ def _read_bronze_partition(delivery_day: date) -> dict[str, bytes]:
         "Partitioned by day(ts_utc) + bidding_zone. Re-running a partition is a "
         "transactional upsert (overwrite by delivery_date)."
     ),
+    check_specs=[
+        AssetCheckSpec(
+            name="row_integrity",
+            asset="silver_prices_hourly",
+            description=(
+                "No duplicate (ts_utc, bidding_zone) keys, no null prices, and each "
+                "zone's interval count is plausible for its resolution. ERROR + "
+                "blocking: a violation here means the identifier_field_ids invariant "
+                "or the NOT NULL schema is broken, and gold shouldn't run on top of it."
+            ),
+            blocking=True,
+        )
+    ],
 )
 def silver_prices_hourly(
     context,
     iceberg: IcebergCatalogResource,
-) -> Output[None]:
+):
     delivery_day = datetime.fromisoformat(context.partition_key).date()
 
     bronze_files = _read_bronze_partition(delivery_day)
     if not bronze_files:
         context.log.warning(f"No bronze files for {delivery_day}")
-        return Output(None, metadata={"rows_written": MetadataValue.int(0)})
+        yield AssetCheckResult(
+            check_name="row_integrity", passed=True, severity=AssetCheckSeverity.ERROR
+        )
+        yield Output(None, metadata={"rows_written": MetadataValue.int(0)})
+        return
 
     ingested_at = datetime.now(tz=timezone.utc).replace(microsecond=0)
     rows: list[dict] = []
@@ -184,7 +205,23 @@ def silver_prices_hourly(
 
     if not rows:
         context.log.warning(f"No rows parsed for {delivery_day}")
-        return Output(None, metadata={"rows_written": MetadataValue.int(0)})
+        yield AssetCheckResult(
+            check_name="row_integrity", passed=True, severity=AssetCheckSeverity.ERROR
+        )
+        yield Output(None, metadata={"rows_written": MetadataValue.int(0)})
+        return
+
+    passed, integrity_details = check_silver_row_integrity(rows)
+    yield AssetCheckResult(
+        check_name="row_integrity",
+        passed=passed,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={
+            "duplicate_keys": MetadataValue.int(integrity_details["duplicate_keys"]),
+            "null_prices": MetadataValue.int(integrity_details["null_prices"]),
+            "zones_out_of_bounds": MetadataValue.json(integrity_details["zones_out_of_bounds"]),
+        },
+    )
 
     arrow_table = pa.Table.from_pylist(rows, schema=SILVER_ARROW_SCHEMA)
     catalog = iceberg.get()
@@ -196,7 +233,7 @@ def silver_prices_hourly(
     table = table.refresh()
     version = write_version_hint(table)
 
-    return Output(
+    yield Output(
         None,
         metadata={
             "delivery_date": MetadataValue.text(delivery_day.isoformat()),

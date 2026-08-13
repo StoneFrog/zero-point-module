@@ -48,3 +48,27 @@ def write_version_hint(table) -> int:
         df.write(sf.read())
 
     return version
+
+
+def count_data_files(bucket: str, table_prefix: str) -> tuple[int, int]:
+    """Return (file_count, total_bytes) of Parquet data files under a table.
+
+    A direct S3 listing under `<table>/data/`, not a PyIceberg metadata-table
+    scan (`table.inspect.files()`) — this only needs a physical file count
+    and doesn't care about per-file Iceberg stats, so it skips the catalog
+    round-trip. See maintenance.py for what this feeds into.
+    """
+    fs = s3_fs()
+    data_prefix = f"{bucket}/{table_prefix}/data"
+    try:
+        entries = fs.find(data_prefix, detail=True)
+    except FileNotFoundError:
+        return 0, 0
+    file_count = 0
+    total_bytes = 0
+    for path, info in entries.items():
+        if not path.endswith(".parquet"):
+            continue
+        file_count += 1
+        total_bytes += info.get("size", 0)
+    return file_count, total_bytes

@@ -8,7 +8,9 @@ hours.
 
 ## Status
 
-**Phase 1 (this repo):** ingest → bronze → silver → gold → dashboards.
+**Phase 1:** ingest → bronze → silver → gold → dashboards.
+**Phase 2 (this repo):** operational hardening — data-quality AssetChecks on
+bronze/silver/gold, weekly small-file monitoring, run-failure alerting.
 See [LEARNING.md](LEARNING.md) for the conceptual walkthrough and the phasing
 roadmap.
 
@@ -82,11 +84,13 @@ When everything is healthy:
 ## First run: materialise the pipeline
 
 1. Open <http://localhost:3001> (or whatever you set `DAGSTER_HOST_PORT` to).
-2. Go to **Assets**. You should see three assets under groups `bronze`,
-   `silver`, `gold`.
+2. Go to **Assets**. You should see assets under groups `bronze`, `silver`,
+   `gold`, and an unpartitioned `lake_file_health` asset under `maintenance`.
 3. Click **Materialize all** for any partition (e.g. `2026-05-04`). Dagster will
    run bronze → silver → gold in order.
-4. Inspect each asset's metadata: row counts, snapshot IDs, S3 paths.
+4. Inspect each asset's metadata: row counts, snapshot IDs, S3 paths, and the
+   **Checks** tab for the data-quality results (`zone_completeness`,
+   `row_integrity`, `stats_consistency`).
 
 ## Inspecting the lake from the CLI
 
@@ -170,18 +174,24 @@ uv run pytest
 ├── src/energy_pipeline/
 │   ├── config.py               # pydantic settings (one place for env vars)
 │   ├── resources.py            # ENTSO-E + Iceberg catalog resources
-│   ├── definitions.py          # Dagster Definitions (assets, jobs, schedule)
+│   ├── quality.py              # pure data-quality checks (Phase 2)
+│   ├── sensors.py              # run-failure alerting (Phase 2)
+│   ├── definitions.py          # Dagster Definitions (assets, jobs, schedules, sensor)
 │   ├── entsoe/
 │   │   ├── client.py           # HTTP client + retries
 │   │   ├── parser.py           # XML -> typed PricePoint[]
 │   │   └── zones.py            # bidding-zone EIC codes
 │   └── assets/
-│       ├── bronze.py           # raw XML to S3
-│       ├── silver.py           # parsed -> Iceberg
-│       └── gold.py             # daily aggregates -> Iceberg
+│       ├── bronze.py           # raw XML to S3 (+ zone_completeness check)
+│       ├── silver.py           # parsed -> Iceberg (+ row_integrity check)
+│       ├── gold.py             # daily aggregates -> Iceberg (+ stats_consistency check)
+│       ├── gold_windows.py     # cheapest contiguous price windows -> Iceberg
+│       └── maintenance.py      # weekly small-file monitoring (Phase 2)
 ├── tests/
 │   ├── fixtures/               # offline ENTSO-E XML
-│   └── test_parser.py
+│   ├── test_parser.py
+│   ├── test_quality.py
+│   └── test_sensors.py
 ├── pyproject.toml + uv.lock
 ├── README.md
 ├── LEARNING.md                 # concepts, why-not-that, phasing

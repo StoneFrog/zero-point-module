@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 import duckdb
 import pyarrow as pa
 from dagster import (
+    AssetCheckResult,
+    AssetCheckSeverity,
+    AssetCheckSpec,
     MetadataValue,
     Output,
     asset,
@@ -39,6 +42,7 @@ from energy_pipeline.assets.silver import (
 )
 from energy_pipeline.config import settings
 from energy_pipeline.iceberg_utils import write_version_hint
+from energy_pipeline.quality import check_gold_stats_consistency
 from energy_pipeline.resources import IcebergCatalogResource
 
 GOLD_TABLE_NAME = "prices_daily_stats"
@@ -105,11 +109,23 @@ def _configure_duckdb_for_minio(con: duckdb.DuckDBPyConnection) -> None:
         "Daily price statistics per zone (min/max/avg/spread/peak/cheapest hour). "
         "Source for dashboards and smart-home decision logic."
     ),
+    check_specs=[
+        AssetCheckSpec(
+            name="stats_consistency",
+            asset="gold_prices_daily_stats",
+            description=(
+                "Every row satisfies min <= avg <= max and spread == max - min. WARN, "
+                "not blocking: a violation flags a bug in the aggregation SQL, but "
+                "gold_cheapest_windows computes independently from silver so it isn't "
+                "at risk from this."
+            ),
+        )
+    ],
 )
 def gold_prices_daily_stats(
     context,
     iceberg: IcebergCatalogResource,
-) -> Output[None]:
+):
     delivery_day = datetime.fromisoformat(context.partition_key).date()
     catalog = iceberg.get()
 
@@ -125,7 +141,11 @@ def gold_prices_daily_stats(
 
     if arrow_silver is None or arrow_silver.num_rows == 0:
         context.log.warning(f"Silver had no rows for {delivery_day}; skipping gold.")
-        return Output(None, metadata={"rows_written": MetadataValue.int(0)})
+        yield AssetCheckResult(
+            check_name="stats_consistency", passed=True, severity=AssetCheckSeverity.WARN
+        )
+        yield Output(None, metadata={"rows_written": MetadataValue.int(0)})
+        return
 
     con = duckdb.connect()
     _configure_duckdb_for_minio(con)
@@ -165,6 +185,24 @@ def gold_prices_daily_stats(
     ).fetch_arrow_table()
     context.log.info(f"agg type: {type(agg).__module__}.{type(agg).__name__}")
 
+    stats_columns = [
+        "min_price_eur_per_mwh",
+        "max_price_eur_per_mwh",
+        "avg_price_eur_per_mwh",
+        "spread_eur_per_mwh",
+    ]
+    stats_rows = agg.select(stats_columns).to_pylist()
+    passed, violations = check_gold_stats_consistency(stats_rows)
+    yield AssetCheckResult(
+        check_name="stats_consistency",
+        passed=passed,
+        severity=AssetCheckSeverity.WARN,
+        metadata={
+            "violations": MetadataValue.int(violations),
+            "rows_checked": MetadataValue.int(len(stats_rows)),
+        },
+    )
+
     computed_at = datetime.now(tz=timezone.utc).replace(microsecond=0)
     computed_at_col = pa.array([computed_at] * agg.num_rows, type=pa.timestamp("us", tz="UTC"))
     agg = agg.append_column("computed_at_utc", computed_at_col)
@@ -192,7 +230,7 @@ def gold_prices_daily_stats(
     gold_table = gold_table.refresh()
     version = write_version_hint(gold_table)
 
-    return Output(
+    yield Output(
         None,
         metadata={
             "delivery_date": MetadataValue.text(delivery_day.isoformat()),

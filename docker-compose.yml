@@ -145,6 +145,7 @@ services:
       S3_ENDPOINT: ${S3_ENDPOINT}
       S3_REGION: ${S3_REGION}
       ICEBERG_CATALOG_URI: ${ICEBERG_CATALOG_URI}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL}
     volumes:
       - ./dagster_home:/opt/dagster/dagster_home
       - ./tests:/opt/dagster/app/tests:ro
@@ -178,6 +179,7 @@ services:
       S3_ENDPOINT: ${S3_ENDPOINT}
       S3_REGION: ${S3_REGION}
       ICEBERG_CATALOG_URI: ${ICEBERG_CATALOG_URI}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL}
     volumes:
       - ./dagster_home:/opt/dagster/dagster_home
       - ./tests:/opt/dagster/app/tests:ro

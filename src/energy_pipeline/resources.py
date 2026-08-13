@@ -1,8 +1,9 @@
 """Dagster resources: external systems exposed to assets via dependency injection.
 
 Why resources: assets stay pure (input -> output), and we can swap (e.g. point
-the catalog at a test Nessie branch) without rewriting the asset code. This is
-how Dagster supports unit testing and multi-environment deploys.
+the catalog at a different REST endpoint for a staging environment) without
+rewriting the asset code. This is how Dagster supports unit testing and
+multi-environment deploys.
 """
 
 from functools import cached_property
