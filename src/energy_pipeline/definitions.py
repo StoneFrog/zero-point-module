@@ -59,6 +59,8 @@ defs = Definitions(
     resources={
         "entsoe": EntsoeResource(use_fixture=settings.entsoe_use_fixture),
         "iceberg": IcebergCatalogResource(),
-        "dbt": DbtCliResource(project_dir=dbt_project),
+        # profiles_dir explicit rather than relying on cwd-defaulting to the
+        # project dir — profiles.yml lives there (see dbt_resource.py).
+        "dbt": DbtCliResource(project_dir=dbt_project, profiles_dir=dbt_project.project_dir),
     },
 )
