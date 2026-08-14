@@ -2,15 +2,17 @@
 
 A learning-oriented data engineering project: pull day-ahead electricity prices
 for every European bidding zone from ENTSO-E, land them in a local lakehouse
-(MinIO + Iceberg + Nessie), transform via Dagster, query via DuckDB, visualise
+(MinIO + Iceberg), transform via Dagster + dbt, query via DuckDB, visualise
 via Superset. End goal: feed a smart-home system that shifts loads to cheap
 hours.
 
 ## Status
 
 **Phase 1:** ingest → bronze → silver → gold → dashboards.
-**Phase 2 (this repo):** operational hardening — data-quality AssetChecks on
+**Phase 2:** operational hardening — data-quality AssetChecks on
 bronze/silver/gold, weekly small-file monitoring, run-failure alerting.
+**Phase 3 (this repo):** gold layer replaced with dbt models (tests + docs),
+orchestrated from Dagster via `@dbt_assets`.
 See [LEARNING.md](LEARNING.md) for the conceptual walkthrough and the phasing
 roadmap.
 
@@ -23,10 +25,12 @@ ENTSO-E API
 MinIO  s3://lake/bronze/entsoe/day_ahead/...raw.xml   (immutable raw)
      │  Dagster asset:  silver_prices_hourly          (Iceberg, day+zone partitioned)
      ▼
-MinIO  s3://lake/warehouse/energy/prices_hourly/...   (typed, deduped)
-     │  Dagster asset:  gold_prices_daily_stats       (Iceberg)
+MinIO  s3://lake/silver/prices_hourly/...             (typed, deduped)
+     │  dbt models (dbt_project/models/gold/), run via Dagster's gold_dbt_assets,
+     │  published to Iceberg by gold_prices_daily_stats / gold_cheapest_windows
      ▼
-MinIO  s3://lake/warehouse/energy/prices_daily_stats/ (aggregates)
+MinIO  s3://lake/gold/prices_daily_stats/...          (aggregates)
+MinIO  s3://lake/gold/prices_cheapest_windows/...     (smart-home load-shifting windows)
      │
      ▼
 DuckDB (embedded query engine) ── Superset (BI)
@@ -40,6 +44,7 @@ DuckDB (embedded query engine) ── Superset (BI)
 | File format | Parquet |
 | Table format | Apache Iceberg |
 | Catalog | Apache Iceberg REST reference catalog (`tabulario/iceberg-rest`) |
+| Transformation (gold layer) | dbt (`dbt-duckdb`), orchestrated via `dagster-dbt` |
 | Query engine | DuckDB |
 | Visualisation | Apache Superset |
 | Metastore (everyone) | PostgreSQL |
@@ -85,12 +90,15 @@ When everything is healthy:
 
 1. Open <http://localhost:3001> (or whatever you set `DAGSTER_HOST_PORT` to).
 2. Go to **Assets**. You should see assets under groups `bronze`, `silver`,
-   `gold`, and an unpartitioned `lake_file_health` asset under `maintenance`.
+   `gold` (the dbt models plus the `gold_prices_daily_stats` /
+   `gold_cheapest_windows` publish assets), and an unpartitioned
+   `lake_file_health` asset under `maintenance`.
 3. Click **Materialize all** for any partition (e.g. `2026-05-04`). Dagster will
-   run bronze → silver → gold in order.
+   run bronze → silver → dbt gold models → Iceberg publish, in order.
 4. Inspect each asset's metadata: row counts, snapshot IDs, S3 paths, and the
    **Checks** tab for the data-quality results (`zone_completeness`,
-   `row_integrity`, `stats_consistency`).
+   `row_integrity`, `stats_consistency`, plus dbt's own `not_null` tests and
+   the singular test on `int_gold_prices_daily_stats`).
 
 ## Inspecting the lake from the CLI
 
@@ -110,7 +118,7 @@ con.execute("INSTALL iceberg; LOAD iceberg;")
 print(
     con.sql("""
         SELECT bidding_zone, ts_utc, price_eur_per_mwh
-        FROM iceberg_scan('s3://lake/warehouse/energy/prices_hourly')
+        FROM iceberg_scan('s3://lake/silver/prices_hourly')
         ORDER BY ts_utc, bidding_zone
         LIMIT 20
     """)
@@ -146,8 +154,8 @@ Superset reads Iceberg via DuckDB-engine. One-time setup:
 5. Test connection, save.
 6. **SQL Lab** — try:
    ```sql
-   SELECT * FROM iceberg_scan('s3://lake/warehouse/energy/prices_hourly')
-   ORDER BY ts_utc DESC
+   SELECT * FROM iceberg_scan('s3://lake/gold/prices_daily_stats')
+   ORDER BY delivery_date DESC
    LIMIT 100;
    ```
 7. Save the working query as a Dataset → build a Chart → drop on a Dashboard.
@@ -157,6 +165,20 @@ Superset reads Iceberg via DuckDB-engine. One-time setup:
 ```bash
 uv sync
 uv run pytest
+```
+
+## Running dbt directly
+
+Useful for iterating on the gold models without going through Dagster. Needs
+a silver Parquet file to read (see `dbt_project/models/staging/`) — easiest
+to grab one that `gold_dbt_assets` already wrote inside the running
+container:
+
+```bash
+docker compose exec dagster-webserver bash
+cd dbt_project
+dbt build --vars '{"silver_parquet_path": "target/silver_partition.parquet", "window_hours": [1, 2, 3, 4, 6, 8]}'
+dbt docs generate && dbt docs serve --port 8080  # column-level lineage in the browser
 ```
 
 ## Repository layout
@@ -171,31 +193,43 @@ uv run pytest
 ├── dagster_home/               # Dagster instance config (mounted into containers)
 │   ├── dagster.yaml
 │   └── workspace.yaml
+├── dbt_project/                 # dbt project: gold-layer SQL (Phase 3)
+│   ├── dbt_project.yml
+│   ├── profiles.yml             # committed — no secrets, all env_var()
+│   ├── models/
+│   │   ├── staging/stg_silver_prices_hourly.sql  # reads the Parquet handoff
+│   │   └── gold/
+│   │       ├── int_gold_prices_daily_stats.sql
+│   │       ├── int_gold_cheapest_windows.sql
+│   │       └── _gold.yml        # column docs + tests
+│   └── tests/                   # singular tests (stats-consistency)
 ├── src/energy_pipeline/
-│   ├── config.py               # pydantic settings (one place for env vars)
-│   ├── resources.py            # ENTSO-E + Iceberg catalog resources
-│   ├── quality.py              # pure data-quality checks (Phase 2)
-│   ├── sensors.py              # run-failure alerting (Phase 2)
-│   ├── definitions.py          # Dagster Definitions (assets, jobs, schedules, sensor)
+│   ├── config.py                # pydantic settings (one place for env vars)
+│   ├── resources.py             # ENTSO-E + Iceberg catalog resources
+│   ├── dbt_resource.py          # dbt project location (Phase 3)
+│   ├── quality.py               # pure data-quality checks (Phase 2)
+│   ├── sensors.py               # run-failure alerting (Phase 2)
+│   ├── definitions.py           # Dagster Definitions (assets, jobs, schedules, sensor, dbt resource)
 │   ├── entsoe/
-│   │   ├── client.py           # HTTP client + retries
-│   │   ├── parser.py           # XML -> typed PricePoint[]
-│   │   └── zones.py            # bidding-zone EIC codes
+│   │   ├── client.py            # HTTP client + retries
+│   │   ├── parser.py            # XML -> typed PricePoint[]
+│   │   └── zones.py             # bidding-zone EIC codes
 │   └── assets/
-│       ├── bronze.py           # raw XML to S3 (+ zone_completeness check)
-│       ├── silver.py           # parsed -> Iceberg (+ row_integrity check)
-│       ├── gold.py             # daily aggregates -> Iceberg (+ stats_consistency check)
-│       ├── gold_windows.py     # cheapest contiguous price windows -> Iceberg
-│       └── maintenance.py      # weekly small-file monitoring (Phase 2)
+│       ├── bronze.py            # raw XML to S3 (+ zone_completeness check)
+│       ├── silver.py            # parsed -> Iceberg (+ row_integrity check)
+│       ├── gold.py              # prices_daily_stats: Iceberg schema/table lifecycle only
+│       ├── gold_windows.py      # prices_cheapest_windows: Iceberg schema/table lifecycle only
+│       ├── gold_dbt.py          # runs dbt, publishes its output to Iceberg (Phase 3)
+│       └── maintenance.py       # weekly small-file monitoring (Phase 2)
 ├── tests/
-│   ├── fixtures/               # offline ENTSO-E XML
+│   ├── fixtures/                # offline ENTSO-E XML
 │   ├── test_parser.py
 │   ├── test_quality.py
 │   └── test_sensors.py
 ├── pyproject.toml + uv.lock
 ├── README.md
-├── LEARNING.md                 # concepts, why-not-that, phasing
-└── LICENSE                     # PolyForm Noncommercial 1.0.0
+├── LEARNING.md                  # concepts, why-not-that, phasing
+└── LICENSE                      # PolyForm Noncommercial 1.0.0
 ```
 
 ## License

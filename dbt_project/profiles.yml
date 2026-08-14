@@ -1,0 +1,27 @@
+# Committed (not gitignored) because it holds no secrets.
+#
+# Deliberately *not* using DuckDB's `httpfs`/`iceberg` extensions to read the
+# lake directly (e.g. via `iceberg_scan()`): the DuckDB `iceberg` community
+# extension has no linux/arm64 build (see docker-compose.yml's Superset
+# service, which already has to pin `platform: linux/amd64` for the same
+# reason) — using it here would silently break the whole Dagster stack on
+# Apple Silicon, not just BI. Instead assets/gold_dbt.py reads silver via the
+# same PyIceberg scan the old Python gold assets used, writes it to a local
+# Parquet file, and dbt's staging model reads that file with `read_parquet()`
+# — a plain local file, no extensions, no S3 credentials, no platform risk.
+#
+# Co-located in the project directory rather than ~/.dbt/profiles.yml so the
+# container just needs one `--profiles-dir` pointed here; see
+# docker-compose.yml's dagster service commands, which run `dbt parse`
+# against this before starting.
+energy_pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      # Scratch database for dbt's own materializations — not the lake.
+      # Gold models here are read back out and pushed into Iceberg by
+      # assets/gold_dbt.py, the same way the old Python gold assets did.
+      # Rebuilt fresh every run; nothing durable lives in this file.
+      path: "target/gold.duckdb"
+      schema: main

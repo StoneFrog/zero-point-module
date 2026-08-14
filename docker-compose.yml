@@ -154,7 +154,19 @@ services:
       # this mount just overlays the running file content.
       - ./src:/opt/dagster/app/src:ro
       - ./scripts:/opt/dagster/app/scripts:ro
-    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+      # Read-write (unlike the mounts above): dbt writes its own target/
+      # artifacts (including manifest.json, which @dbt_assets reads at
+      # Python-import time — hence `dbt parse` in the command below, run
+      # fresh against whatever's currently mounted here) and a scratch
+      # DuckDB file for the gold models. See src/energy_pipeline/dbt_resource.py.
+      - ./dbt_project:/opt/dagster/app/dbt_project
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        dbt parse --project-dir /opt/dagster/app/dbt_project --profiles-dir /opt/dagster/app/dbt_project
+        exec dagster-webserver -h 0.0.0.0 -p 3000 -w /opt/dagster/dagster_home/workspace.yaml
 
   dagster-daemon:
     image: energy-pipeline/dagster:dev
@@ -185,7 +197,15 @@ services:
       - ./tests:/opt/dagster/app/tests:ro
       - ./src:/opt/dagster/app/src:ro
       - ./scripts:/opt/dagster/app/scripts:ro
-    command: ["dagster-daemon", "run", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+      # Read-write — see the matching mount + comment on dagster-webserver above.
+      - ./dbt_project:/opt/dagster/app/dbt_project
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        dbt parse --project-dir /opt/dagster/app/dbt_project --profiles-dir /opt/dagster/app/dbt_project
+        exec dagster-daemon run -w /opt/dagster/dagster_home/workspace.yaml
 
   superset-init:
     build:

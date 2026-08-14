@@ -102,9 +102,14 @@ lakehouse pattern's real payoff.
 Dashboard tool. Connects to anything SQLAlchemy-compatible, including DuckDB.
 We use DuckDB-engine to scan Iceberg tables in MinIO from Superset directly.
 
-### dbt (deferred to Phase 3)
-SQL-based transformations with tests, docs, and column-level lineage. Replaces
-the gold-layer Python with declarative SQL models.
+### dbt (Phase 3)
+SQL-based transformations with tests, docs, and column-level lineage.
+Replaces the gold-layer Python with declarative SQL models
+(`dbt_project/models/gold/`). Orchestrated from Dagster via `@dbt_assets`
+(`assets/gold_dbt.py`) — dbt's own tests (`_gold.yml`, plus the singular
+test in `dbt_project/tests/`) surface as Dagster asset checks automatically.
+Doesn't write Iceberg directly here — see "Why dbt writes to a scratch
+DuckDB file instead of Iceberg directly" below.
 
 ## Why the choices in this repo
 
@@ -208,6 +213,44 @@ Slack app, OAuth scopes, or a dedicated `dagster-slack` dependency for a repo
 that may not have Slack at all. Swap in a real integration later by pointing
 the same env var at whatever ingests generic JSON webhooks.
 
+### Why dbt writes to a scratch DuckDB file instead of Iceberg directly (Phase 3)?
+`dbt_project/models/gold/` computes both gold tables, but only as tables in a
+local scratch `.duckdb` file (`profiles.yml`'s `dev` target). Two plain
+Dagster assets (`gold_prices_daily_stats`, `gold_cheapest_windows` in
+`assets/gold_dbt.py`) read that file back out and push it into Iceberg using
+the exact same PyIceberg `overwrite()` pattern silver.py and the old Python
+gold assets used, instead of having dbt write Iceberg itself.
+
+Why the extra hop: we built this without network or Docker access, so there
+was no way to verify that a dbt-duckdb Iceberg-write path would actually
+preserve the exact schema, partition spec, and identifier fields already
+committed to in `gold.py`/`gold_windows.py` (see those modules — the field
+IDs and day+zone partitioning are load-bearing, and getting them wrong on a
+rewrite means silently different tables, not a loud error). That write path
+has been hardened over many iterations already (check the git log for the
+trail of PyIceberg/Arrow type fixes it took to get right) and wasn't worth
+re-risking on an unverified plugin. dbt's job here is the SQL, tests, and
+docs — genuinely replacing the gold-layer Python per the Phase 3 goal — not
+also being the thing that talks to the lake. Revisit once this has actually
+been run against the live stack.
+
+### Why a Parquet handoff instead of `iceberg_scan()` for dbt's silver read (Phase 3)?
+The obvious way to read silver from dbt would be DuckDB's `iceberg_scan()` —
+same as the README's "Inspecting the lake from the CLI" example. We didn't:
+the DuckDB `iceberg` community extension has no `linux/arm64` build (this is
+exactly why the Superset service in docker-compose.yml already has to pin
+`platform: linux/amd64`), and the Dagster containers aren't platform-pinned.
+Loading that extension inside dbt-duckdb would silently break the whole
+pipeline on Apple Silicon, not just BI.
+
+Instead, `assets/gold_dbt.py`'s `gold_dbt_assets` reads the partition's
+silver rows out of Iceberg via the same PyIceberg scan the old Python gold
+assets used, and writes them to a local Parquet file *before* invoking
+`dbt build`; the staging model (`stg_silver_prices_hourly.sql`) just calls
+`read_parquet()` on it. No DuckDB extensions, no S3 credentials, no
+platform risk inside dbt at all — every touchpoint with the lake stays in
+the already-proven PyIceberg/s3fs code.
+
 ### Why a serving layer for Home Assistant (Phase 5)?
 The lake is great for analytics but slow-cold and coupled to schema choices.
 A small Postgres "serving table" published from gold gives Home Assistant a
@@ -216,8 +259,10 @@ Standard "data product" pattern.
 
 ## What's deliberately not in Phase 1
 
-- **dbt** — Phase 3. Replaces the gold-layer Python with SQL models, plus
-  tests + column-level lineage for free.
+- ~~**dbt**~~ — done in Phase 3. `dbt_project/models/gold/` replaces the
+  gold-layer Python with SQL models + tests + docs; see "Why dbt writes to a
+  scratch DuckDB file instead of Iceberg directly" above for the one place
+  it's not a 1:1 swap.
 - **OpenLineage / DataHub** — Phase 4. Wire-format lineage events out of
   Dagster + dbt for an external catalog UI.
 - **FastAPI + serving Postgres** — Phase 5. The Home Assistant interface.
@@ -225,8 +270,11 @@ Standard "data product" pattern.
   periodically.
 - **More datasets** — energy mix, generation by source, cross-border flows.
   All available via ENTSO-E once the bronze pattern is comfortable.
-- **Schema tests on silver/gold** — bare-minimum dbt tests will cover this in
-  Phase 3.
+- ~~**Schema tests on silver/gold**~~ — dbt tests on the gold models are done
+  (`dbt_project/models/gold/_gold.yml` + the singular test in
+  `dbt_project/tests/`); silver's equivalent invariants are still the
+  hand-written Phase 2 asset check (`quality.check_silver_row_integrity`),
+  not a dbt test, since silver is written by plain Python, not dbt.
 
 ## Known limitations / deferred TODOs
 
@@ -247,12 +295,18 @@ Things we explicitly accepted as good-enough for Phase 1 and will revisit:
   earliest hour on ties via `ORDER BY price ASC, ts_utc ASC` — silently
   arbitrary. The `gold_cheapest_windows` asset addresses the common
   smart-home use case ("cheapest 2h block") but doesn't expose all ties.
-- **Image pinning**. Postgres, Nessie, and the official Superset image should
-  be pinned by digest (not just tag) for true reproducibility across rebuilds.
-  MinIO and mc are already pinned by dated release tag.
+- **Image pinning**. Postgres, the Iceberg REST catalog, and the official
+  Superset image should be pinned by digest (not just tag) for true
+  reproducibility across rebuilds. MinIO and mc are already pinned by dated
+  release tag.
 - **Type-coercion friction in gold**. The explicit Arrow `.cast()` calls in
-  gold assets exist because DuckDB returns `int64` for `COUNT(*)` while our
-  Iceberg schema declares `int32`. dbt-iceberg handles this in Phase 3.
+  the gold publish assets (`assets/gold_dbt.py`) exist because DuckDB
+  returns `int64` for `COUNT(*)` while our Iceberg schema declares `int32`.
+  Still here after Phase 3 — dbt materializes gold in DuckDB, not Iceberg
+  (see "Why dbt writes to a scratch DuckDB file instead of Iceberg directly"
+  above), so this cast just moved from the old Python gold assets to the new
+  publish assets, not away. Would go away if dbt ever writes Iceberg
+  directly here.
 - **Sub-hourly resolution support**. `gold_cheapest_windows` filters to
   `resolution_minutes = 60`. DE-LU has been quarter-hourly since 2025-10;
   to include it we'd need to either pre-aggregate to hourly or compute
@@ -276,17 +330,26 @@ If you're tracing the data path:
    to MinIO. Daily-partitioned Dagster asset.
 5. `src/energy_pipeline/assets/silver.py` — read partition's bronze, parse,
    upsert into Iceberg.
-6. `src/energy_pipeline/assets/gold.py` — DuckDB-aggregate silver to daily
-   stats, upsert into Iceberg.
-7. `src/energy_pipeline/resources.py` — how Dagster injects the ENTSO-E
+6. `dbt_project/models/staging/stg_silver_prices_hourly.sql` and
+   `dbt_project/models/gold/*.sql` — the gold-layer SQL (Phase 3), reading a
+   Parquet handoff of the partition's silver rows (see
+   `assets/gold_dbt.py`'s docstring for why not `iceberg_scan()` directly).
+7. `src/energy_pipeline/assets/gold_dbt.py` — orchestrates the dbt run
+   (`gold_dbt_assets`) and publishes its output to Iceberg
+   (`gold_prices_daily_stats`, `gold_cheapest_windows`); `assets/gold.py` and
+   `assets/gold_windows.py` now hold just the Iceberg schema/table-lifecycle
+   half of that.
+8. `src/energy_pipeline/resources.py` — how Dagster injects the ENTSO-E
    client and the Iceberg catalog.
-8. `src/energy_pipeline/quality.py` — pure data-quality checks (Phase 2),
-   called from bronze/silver/gold via `check_specs=`.
-9. `src/energy_pipeline/assets/maintenance.py` — small-file monitoring
-   (Phase 2); `src/energy_pipeline/sensors.py` — run-failure alerting
-   (Phase 2).
-10. `src/energy_pipeline/definitions.py` — wires everything together with
-    schedules and a sensor.
+9. `src/energy_pipeline/quality.py` — pure data-quality checks (Phase 2),
+   called from bronze/silver/gold_dbt via `check_specs=`.
+10. `src/energy_pipeline/assets/maintenance.py` — small-file monitoring
+    (Phase 2); `src/energy_pipeline/sensors.py` — run-failure alerting
+    (Phase 2).
+11. `src/energy_pipeline/dbt_resource.py` — where the dbt project lives, used
+    by both `definitions.py`'s `DbtCliResource` and `assets/gold_dbt.py`.
+12. `src/energy_pipeline/definitions.py` — wires everything together with
+    schedules, a sensor, and the dbt resource.
 
 ## Operational mental model
 
@@ -303,8 +366,8 @@ If you're tracing the data path:
 | Phase | Goal | What lands |
 |---|---|---|
 | 1 | End-to-end ingest + lakehouse + dashboards | bronze/silver/gold, Iceberg REST catalog, Superset |
-| 2 (this) | Operational hardening | AssetCheck data-quality gates, small-file monitoring (compaction itself deferred — see notes above), run-failure alerting |
-| 3 | dbt | Replace gold-layer Python with dbt models; column-level lineage |
+| 2 | Operational hardening | AssetCheck data-quality gates, small-file monitoring (compaction itself deferred — see notes above), run-failure alerting |
+| 3 (this) | dbt | Gold layer replaced with dbt models (tests + docs); dbt orchestrated via `@dbt_assets`, dbt tests surface as Dagster checks |
 | 4 | Lineage emission | OpenLineage events from Dagster+dbt; optional DataHub |
 | 5 | Smart-home interface | Postgres serving layer, FastAPI, auth, Home Assistant integration |
 | 6 | Forecasting | Price forecast model; load-shifting recommendations |

@@ -1,0 +1,26 @@
+name: energy_pipeline
+version: "1.0.0"
+config-version: 2
+
+# Matches the `energy_pipeline:` target block in profiles.yml (co-located in
+# this directory — see profiles.yml's header comment for why).
+profile: energy_pipeline
+
+model-paths: ["models"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  energy_pipeline:
+    staging:
+      # Pass-through read of one partition's worth of silver rows. No reason
+      # for this to exist as its own table/view — inlined as a CTE wherever
+      # `ref()`'d.
+      +materialized: ephemeral
+    gold:
+      # Each dbt invocation is scoped to one delivery_date (via the required
+      # `delivery_date` var, enforced in the staging model), so a full
+      # CREATE OR REPLACE TABLE per run is already minimal — no incremental
+      # materialization needed.
+      +materialized: table

@@ -10,10 +10,20 @@ dependencies = [
     "dagster==1.9.11",
     "dagster-webserver==1.9.11",
     "dagster-postgres==0.25.11",
+    # dagster's "library" packages version in lockstep with dagster-postgres
+    # above (0.25.11 <-> dagster 1.9.11), not with dagster-core's own scheme.
+    "dagster-dbt==0.25.11",
     # Lakehouse
     "pyiceberg[s3fs,pyarrow]==0.8.1",
     "pyarrow>=18.0.0",
     "duckdb>=1.1.3",
+    # dbt (Phase 3): gold-layer transformations as SQL models w/ tests + docs.
+    # Range-pinned, not exact — this was authored without network access to
+    # verify which dbt-core/dbt-duckdb patch versions actually resolve
+    # together for dagster 1.9.11; tighten to exact versions once `uv sync`
+    # resolves them for real (uv.lock will pin the resolution regardless).
+    "dbt-core>=1.8,<1.10",
+    "dbt-duckdb>=1.8,<1.10",
     # HTTP + parsing
     "httpx>=0.27.0",
     "tenacity>=9.0.0",
