@@ -155,7 +155,10 @@ def _read_bronze_partition(delivery_day: date) -> dict[str, bytes]:
                 "No duplicate (ts_utc, bidding_zone) keys, no null prices, and each "
                 "zone's interval count is plausible for its resolution. ERROR + "
                 "blocking: a violation here means the identifier_field_ids invariant "
-                "or the NOT NULL schema is broken, and gold shouldn't run on top of it."
+                "or the NOT NULL schema would be broken. On failure, the write to "
+                "Iceberg is skipped entirely (whatever was already there for this "
+                "partition is left untouched) and blocking=True additionally skips "
+                "gold_dbt_assets for the rest of this run."
             ),
             blocking=True,
         )
@@ -222,6 +225,16 @@ def silver_prices_hourly(
             "zones_out_of_bounds": MetadataValue.json(integrity_details["zones_out_of_bounds"]),
         },
     )
+    if not passed:
+        # Don't let rows that fail the identifier/NOT NULL invariants reach
+        # Iceberg — `blocking=True` above only skips *this run's* downstream
+        # step, it doesn't stop this function from writing. Whatever was
+        # already committed for this partition (last good run, or nothing)
+        # is left as-is; re-running the partition after a fix behaves the
+        # same as any other failed materialization.
+        context.log.error(f"row_integrity check failed for {delivery_day}: {integrity_details}")
+        yield Output(None, metadata={"rows_written": MetadataValue.int(0)})
+        return
 
     arrow_table = pa.Table.from_pylist(rows, schema=SILVER_ARROW_SCHEMA)
     catalog = iceberg.get()

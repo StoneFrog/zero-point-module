@@ -156,25 +156,50 @@ The trade is many small files; we'll add periodic compaction in Phase 2.
 Dagster supports two shapes for a check: a standalone `@asset_check(asset=X)`
 function, or a check declared via `check_specs=` on `@asset` itself, with the
 asset function `yield`ing both its `Output` and its `AssetCheckResult`s. We
-used the co-located form throughout (`bronze.py`, `silver.py`, `gold.py`,
+used the co-located form throughout (`bronze.py`, `silver.py`, `gold_dbt.py`,
 `maintenance.py`). Reasons: it reuses values the asset already computed (no
-re-scanning bronze/silver to check what the asset just wrote), and it
-guarantees the check runs against the exact partition the asset just
-materialised rather than depending on partition-context being threaded
-through a separately-scheduled check run.
+re-scanning bronze/silver to check what the asset just wrote), it guarantees
+the check runs against the exact partition the asset just materialised
+rather than depending on partition-context being threaded through a
+separately-scheduled check run, and — the one that actually matters for
+correctness — because the check code runs *inline, before later statements
+in the same function*, it can gate what those later statements do. A
+standalone `@asset_check` can't do this even in principle: it only ever runs
+*after* the asset it checks has already been materialised.
 
-Severity and blocking are calibrated per check, not uniform: bronze's
-`zone_completeness` is WARN (a single zone outage shouldn't stop the run —
-matches the existing "log a warning and continue" pattern for per-zone
-fetch failures). silver's `row_integrity` is ERROR and `blocking=True` (a
-duplicate key or null price breaks the Iceberg schema's own guarantees, so
-gold shouldn't compute on top of it — but the write to Iceberg still
-happens; the check gates the *next* step in the same run, not silver's own
-materialization, staying consistent with "failures are recoverable, re-run
-the partition"). gold's `stats_consistency` is WARN (an arithmetic
-inconsistency here is a bug worth flagging, but nothing downstream depends
-on it — `gold_cheapest_windows` reads from silver directly, not from this
-table).
+Worth being precise about what `yield`ing a check does and doesn't do.
+`AssetCheckResult(blocking=True)` is a plain object — building it has no
+side effects, and yielding it doesn't pause your own function; the engine
+just consumes it as one item in the generator's event stream and *later*
+uses it to decide whether to skip a downstream *op* in the run's execution
+plan. That "skip the next op" behavior is identical whether the check came
+from `check_specs=` or a standalone `@asset_check` — blocking isn't a
+co-located-only feature. What's unique to co-located checks is purely a
+matter of where you put the `yield` relative to your own side-effecting
+code, and whether you act on the result yourself.
+
+`silver_prices_hourly` actually uses that: `row_integrity` computes
+`check_silver_row_integrity` and yields the result *before* the
+`table.overwrite()` call, then explicitly checks `if not passed: return`
+before reaching it — so a duplicate key or null price never reaches
+Iceberg, not just "gets flagged after the fact." (Earlier versions of this
+asset yielded the check but didn't branch on it, which meant bad rows got
+written anyway and only *downstream* steps were skipped for that one run —
+a real gap, since Dagster still shows the materialization as successful and
+a later independent re-run of gold reads the bad data with no gate at all.)
+`bronze.py`'s `zone_completeness` and `gold_dbt.py`'s `stats_consistency`
+don't do this — they're WARN, not ERROR, and deliberately don't gate their
+own writes:
+
+- `zone_completeness` is WARN because a single zone outage shouldn't stop
+  the run — matches the existing "log a warning and continue" pattern for
+  per-zone fetch failures.
+- `stats_consistency` is WARN because it's a belt-and-suspenders sanity
+  check on dbt's output (dbt's own singular test already enforces the same
+  invariant during `dbt build`); nothing downstream depends on
+  `gold_prices_daily_stats` specifically — `gold_cheapest_windows` is a
+  separate dbt model, independently computed from the same silver Parquet
+  handoff, not from this table.
 
 ### Why file-count monitoring instead of automatic Iceberg compaction? (Phase 2)
 LEARNING.md's Phase 1 note on day partitioning flagged "many small files"
