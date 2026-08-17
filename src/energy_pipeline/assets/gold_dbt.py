@@ -2,24 +2,17 @@
 
 dbt (dbt_project/models/gold/) owns the SQL, docs, and tests for the two gold
 tables — that's the "replace gold-layer Python with dbt models" goal from
-LEARNING.md's Phase 3. It's sandwiched between two thin, proven Python steps
-in `gold_dbt_assets` below, both reusing exactly the machinery
-silver.py/the old Python gold assets already hardened over many iterations
-(see git log for the trail of PyIceberg/Arrow type fixes):
+LEARNING.md's Phase 3. `gold_dbt_assets` below stages dbt's input (see
+dbt_staging.py — silver, via a local Parquet handoff) and runs `dbt build`,
+which transforms it into DuckDB tables in a scratch `.duckdb` file. The two
+plain `@asset`s below then read that scratch file back out and push it into
+Iceberg using the exact same PyIceberg overwrite() pattern the old Python
+gold assets used (see git log for the trail of PyIceberg/Arrow type fixes
+that pattern took to get right).
 
-1. Read the partition's silver rows out of Iceberg via PyIceberg (the same
-   scan the old gold.py used) and write them to a local Parquet file.
-2. Run `dbt build` — its staging model reads that Parquet file
-   (`read_parquet()`, no DuckDB extensions involved — see profiles.yml's
-   header comment for why: the DuckDB `iceberg` extension has no arm64
-   build, and this sidesteps that entirely), and the two gold models
-   transform it into DuckDB tables in a scratch `.duckdb` file.
-
-The two plain `@asset`s below then read that scratch file back out and push
-it into Iceberg using the exact same PyIceberg overwrite() pattern as
-before. dbt never touches Iceberg or S3/MinIO directly — deliberately: we
-had no way to verify, in the environment this was built in (no network, no
-Docker), that a dbt-duckdb Iceberg-write path would preserve the exact
+dbt never touches Iceberg or S3/MinIO directly — deliberately: we had no way
+to verify, in the environment this was built in (no network, no Docker),
+that a dbt-duckdb Iceberg-write path would preserve the exact
 schema/partition-spec/identifier-fields already committed to in
 gold.py/gold_windows.py. Revisit once this has been run against the live
 stack — see LEARNING.md's Phase 3 note.
@@ -30,7 +23,6 @@ from datetime import datetime
 
 import duckdb
 import pyarrow as pa
-import pyarrow.parquet as pq
 from dagster import (
     AssetCheckResult,
     AssetCheckSeverity,
@@ -50,48 +42,13 @@ from energy_pipeline.assets.gold_windows import (
     WINDOW_HOURS,
     ensure_windows_table,
 )
-from energy_pipeline.assets.silver import NAMESPACE, TABLE_NAME
 from energy_pipeline.dbt_resource import dbt_project
+from energy_pipeline.dbt_staging import SILVER_PARQUET_PATH, write_silver_partition_parquet
 from energy_pipeline.iceberg_utils import write_version_hint
 from energy_pipeline.quality import check_gold_stats_consistency
 from energy_pipeline.resources import IcebergCatalogResource
 
 DBT_DUCKDB_PATH = dbt_project.project_dir / "target" / "gold.duckdb"
-SILVER_PARQUET_PATH = dbt_project.project_dir / "target" / "silver_partition.parquet"
-
-# Subset of SILVER_ARROW_SCHEMA (silver.py) — only what the dbt models read.
-SILVER_PARQUET_SCHEMA = pa.schema(
-    [
-        pa.field("ts_utc", pa.timestamp("us", tz="UTC")),
-        pa.field("delivery_date", pa.date32()),
-        pa.field("bidding_zone", pa.string()),
-        pa.field("resolution_minutes", pa.int32()),
-        pa.field("price_eur_per_mwh", pa.float64()),
-    ]
-)
-
-
-def _write_silver_partition_parquet(iceberg: IcebergCatalogResource, delivery_day_lit: str) -> int:
-    """Scan one partition's silver rows out of Iceberg, hand them to dbt as Parquet.
-
-    Same PyIceberg scan pattern the old Python gold assets used. Always
-    writes a (possibly empty) file with the right schema, so dbt's
-    `read_parquet()` never hits a missing-file error.
-    """
-    catalog = iceberg.get()
-    silver_table = catalog.load_table((NAMESPACE, TABLE_NAME))
-    scan = silver_table.scan(row_filter=EqualTo("delivery_date", delivery_day_lit))
-    batches = list(scan.to_arrow_batch_reader())
-    arrow_silver = pa.Table.from_batches(batches) if batches else None
-
-    if arrow_silver is None or arrow_silver.num_rows == 0:
-        arrow_silver = pa.Table.from_pylist([], schema=SILVER_PARQUET_SCHEMA)
-    else:
-        arrow_silver = arrow_silver.select(SILVER_PARQUET_SCHEMA.names)
-
-    SILVER_PARQUET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(arrow_silver, str(SILVER_PARQUET_PATH))
-    return arrow_silver.num_rows
 
 
 class _BareNameDbtTranslator(DagsterDbtTranslator):
@@ -116,7 +73,7 @@ def gold_dbt_assets(context, dbt: DbtCliResource, iceberg: IcebergCatalogResourc
     delivery_day = datetime.fromisoformat(context.partition_key).date()
     delivery_day_lit = delivery_day.isoformat()
 
-    row_count = _write_silver_partition_parquet(iceberg, delivery_day_lit)
+    row_count = write_silver_partition_parquet(iceberg, delivery_day_lit)
     context.log.info(f"Wrote {row_count} silver rows to {SILVER_PARQUET_PATH} for dbt.")
 
     dbt_vars = {"silver_parquet_path": str(SILVER_PARQUET_PATH), "window_hours": list(WINDOW_HOURS)}

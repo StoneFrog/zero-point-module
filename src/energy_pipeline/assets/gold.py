@@ -12,7 +12,6 @@ that's been hardened over many iterations (see git log) and isn't worth
 re-deriving elsewhere.
 """
 
-import pyarrow as pa
 from pyiceberg.catalog import Catalog
 from pyiceberg.exceptions import NamespaceAlreadyExistsError, NoSuchTableError
 from pyiceberg.partitioning import PartitionField, PartitionSpec
@@ -53,24 +52,13 @@ GOLD_PARTITION_SPEC = PartitionSpec(
     PartitionField(source_id=2, field_id=1001, transform=IdentityTransform(), name="bidding_zone"),
 )
 
-# Mirrors GOLD_SCHEMA. dbt's int_gold_prices_daily_stats model produces the
-# same columns via DuckDB, whose inferred types (e.g. int64 for COUNT(*))
-# don't always match Iceberg's — see LEARNING.md's "Type-coercion friction"
-# note — so the publish step casts to this before writing.
-GOLD_ARROW_SCHEMA = pa.schema(
-    [
-        pa.field("delivery_date", pa.date32(), nullable=False),
-        pa.field("bidding_zone", pa.string(), nullable=False),
-        pa.field("min_price_eur_per_mwh", pa.float64(), nullable=False),
-        pa.field("max_price_eur_per_mwh", pa.float64(), nullable=False),
-        pa.field("avg_price_eur_per_mwh", pa.float64(), nullable=False),
-        pa.field("spread_eur_per_mwh", pa.float64(), nullable=False),
-        pa.field("cheapest_hour_utc", pa.timestamp("us", tz="UTC"), nullable=False),
-        pa.field("peak_hour_utc", pa.timestamp("us", tz="UTC"), nullable=False),
-        pa.field("n_intervals", pa.int32(), nullable=False),
-        pa.field("computed_at_utc", pa.timestamp("us", tz="UTC"), nullable=False),
-    ]
-)
+# Derived from GOLD_SCHEMA rather than hand-declared. dbt's
+# int_gold_prices_daily_stats model produces the same columns via DuckDB,
+# whose inferred types (e.g. int64 for COUNT(*)) don't always match
+# Iceberg's — see LEARNING.md's "Type-coercion friction" note — so the
+# publish step still casts to this before writing, but there's now exactly
+# one place (GOLD_SCHEMA) declaring what the columns and types actually are.
+GOLD_ARROW_SCHEMA = GOLD_SCHEMA.as_arrow()
 
 
 def ensure_gold_table(catalog: Catalog):

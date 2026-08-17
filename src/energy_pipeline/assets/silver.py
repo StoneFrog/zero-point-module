@@ -65,26 +65,24 @@ SILVER_SCHEMA = Schema(
 
 # Day-level partitioning matches our daily overwrite pattern: a re-run rewrites
 # exactly one tiny file per zone, no write amplification. Tradeoff: many small
-# files over time — periodic compaction is on the roadmap (Phase 2).
+# files over time. Not "periodic compaction" (see LEARNING.md's "Why
+# file-count monitoring instead of automatic Iceberg compaction" note) —
+# under this write pattern each partition only ever holds one file, so
+# there's nothing *within* a partition to compact; the actual fix is
+# coarser partitioning (e.g. month instead of day), which PyIceberg's
+# overwrite() supports transparently (it rewrites the affected slice of an
+# existing file when the delete filter doesn't align to whole files) but
+# hasn't been done here yet. `lake_file_health` (assets/maintenance.py)
+# watches for this.
 SILVER_PARTITION_SPEC = PartitionSpec(
     PartitionField(source_id=1, field_id=1000, transform=DayTransform(), name="day"),
     PartitionField(source_id=3, field_id=1001, transform=IdentityTransform(), name="bidding_zone"),
 )
 
-# PyArrow schema mirroring the Iceberg schema. Used to build the in-memory
-# table we then hand to PyIceberg's writer.
-SILVER_ARROW_SCHEMA = pa.schema(
-    [
-        pa.field("ts_utc", pa.timestamp("us", tz="UTC"), nullable=False),
-        pa.field("delivery_date", pa.date32(), nullable=False),
-        pa.field("bidding_zone", pa.string(), nullable=False),
-        pa.field("resolution_minutes", pa.int32(), nullable=False),
-        pa.field("price_eur_per_mwh", pa.float64(), nullable=False),
-        pa.field("currency", pa.string(), nullable=False),
-        pa.field("measure_unit", pa.string(), nullable=False),
-        pa.field("ingested_at_utc", pa.timestamp("us", tz="UTC"), nullable=False),
-    ]
-)
+# Derived from SILVER_SCHEMA rather than hand-declared, so the two can't
+# drift apart. `Schema.as_arrow()` is what PyIceberg itself uses internally
+# to align Arrow tables with a table's schema before writing.
+SILVER_ARROW_SCHEMA = SILVER_SCHEMA.as_arrow()
 
 
 def _ensure_table(catalog: Catalog):

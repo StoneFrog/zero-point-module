@@ -13,7 +13,6 @@ see that model's comment). This module keeps just the Iceberg-side contract,
 same as gold.py.
 """
 
-import pyarrow as pa
 from pyiceberg.catalog import Catalog
 from pyiceberg.exceptions import NamespaceAlreadyExistsError, NoSuchTableError
 from pyiceberg.partitioning import PartitionField, PartitionSpec
@@ -55,19 +54,10 @@ GOLD_WINDOWS_PARTITION_SPEC = PartitionSpec(
     PartitionField(source_id=2, field_id=1001, transform=IdentityTransform(), name="bidding_zone"),
 )
 
-# Mirrors GOLD_WINDOWS_SCHEMA — see GOLD_ARROW_SCHEMA in gold.py for why the
-# publish step casts to this before writing.
-GOLD_WINDOWS_ARROW_SCHEMA = pa.schema(
-    [
-        pa.field("delivery_date", pa.date32(), nullable=False),
-        pa.field("bidding_zone", pa.string(), nullable=False),
-        pa.field("window_hours", pa.int32(), nullable=False),
-        pa.field("window_start_utc", pa.timestamp("us", tz="UTC"), nullable=False),
-        pa.field("window_end_utc", pa.timestamp("us", tz="UTC"), nullable=False),
-        pa.field("avg_price_eur_per_mwh", pa.float64(), nullable=False),
-        pa.field("computed_at_utc", pa.timestamp("us", tz="UTC"), nullable=False),
-    ]
-)
+# Derived from GOLD_WINDOWS_SCHEMA — see GOLD_ARROW_SCHEMA in gold.py for why
+# the publish step casts to this before writing, and why this is derived
+# rather than hand-declared.
+GOLD_WINDOWS_ARROW_SCHEMA = GOLD_WINDOWS_SCHEMA.as_arrow()
 
 
 def ensure_windows_table(catalog: Catalog):
