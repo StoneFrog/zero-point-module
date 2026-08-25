@@ -2,17 +2,17 @@
 
 dbt (dbt_project/models/gold/) owns the SQL, docs, and tests for the two gold
 tables — that's the "replace gold-layer Python with dbt models" goal from
-LEARNING.md's Phase 3. `gold_dbt_assets` below stages dbt's input (see
-dbt_staging.py — silver, via a local Parquet handoff) and runs `dbt build`,
-which transforms it into DuckDB tables in a scratch `.duckdb` file. The two
-plain `@asset`s below then read that scratch file back out and push it into
-Iceberg using the exact same PyIceberg overwrite() pattern the old Python
-gold assets used (see git log for the trail of PyIceberg/Arrow type fixes
-that pattern took to get right).
+LEARNING.md's Phase 3. `gold_dbt_assets` runs `dbt build`, which reads silver
+straight out of Iceberg (`iceberg_scan()` in the staging model — see
+profiles.yml) and transforms it into DuckDB tables in a scratch `.duckdb`
+file. The two plain `@asset`s below then read that scratch file back out and
+push it into Iceberg using the exact same PyIceberg overwrite() pattern the
+old Python gold assets used (see git log for the trail of PyIceberg/Arrow
+type fixes that pattern took to get right).
 
-dbt never touches Iceberg or S3/MinIO directly — deliberately: we had no way
-to verify, in the environment this was built in (no network, no Docker),
-that a dbt-duckdb Iceberg-write path would preserve the exact
+dbt reads Iceberg but doesn't write it — deliberately: we had no way to
+verify, in the environment this was built in (no network, no Docker), that a
+dbt-duckdb Iceberg-write path would preserve the exact
 schema/partition-spec/identifier-fields already committed to in
 gold.py/gold_windows.py. Revisit once this has been run against the live
 stack — see LEARNING.md's Phase 3 note.
@@ -43,7 +43,6 @@ from energy_pipeline.assets.gold_windows import (
     ensure_windows_table,
 )
 from energy_pipeline.dbt_resource import dbt_project
-from energy_pipeline.dbt_staging import SILVER_PARQUET_PATH, write_silver_partition_parquet
 from energy_pipeline.iceberg_utils import write_version_hint
 from energy_pipeline.quality import check_gold_stats_consistency
 from energy_pipeline.resources import IcebergCatalogResource
@@ -69,14 +68,9 @@ class _BareNameDbtTranslator(DagsterDbtTranslator):
     partitions_def=daily_partitions,
     dagster_dbt_translator=_BareNameDbtTranslator(),
 )
-def gold_dbt_assets(context, dbt: DbtCliResource, iceberg: IcebergCatalogResource):
+def gold_dbt_assets(context, dbt: DbtCliResource):
     delivery_day = datetime.fromisoformat(context.partition_key).date()
-    delivery_day_lit = delivery_day.isoformat()
-
-    row_count = write_silver_partition_parquet(iceberg, delivery_day_lit)
-    context.log.info(f"Wrote {row_count} silver rows to {SILVER_PARQUET_PATH} for dbt.")
-
-    dbt_vars = {"silver_parquet_path": str(SILVER_PARQUET_PATH), "window_hours": list(WINDOW_HOURS)}
+    dbt_vars = {"delivery_date": delivery_day.isoformat(), "window_hours": list(WINDOW_HOURS)}
     yield from dbt.cli(["build", "--vars", json.dumps(dbt_vars)], context=context).stream()
 
 

@@ -259,22 +259,38 @@ docs — genuinely replacing the gold-layer Python per the Phase 3 goal — not
 also being the thing that talks to the lake. Revisit once this has actually
 been run against the live stack.
 
-### Why a Parquet handoff instead of `iceberg_scan()` for dbt's silver read (Phase 3)?
-The obvious way to read silver from dbt would be DuckDB's `iceberg_scan()` —
-same as the README's "Inspecting the lake from the CLI" example. We didn't:
-the DuckDB `iceberg` community extension has no `linux/arm64` build (this is
-exactly why the Superset service in docker-compose.yml already has to pin
-`platform: linux/amd64`), and the Dagster containers aren't platform-pinned.
-Loading that extension inside dbt-duckdb would silently break the whole
-pipeline on Apple Silicon, not just BI.
+### Why the staging model reads silver via `iceberg_scan()` (and why it didn't at first)
+`stg_silver_prices_hourly.sql` reads silver straight from its Iceberg S3
+location with DuckDB's `iceberg_scan()`, filtered to the partition's
+`delivery_date` — same idea as the README's "Inspecting the lake from the
+CLI" example.
 
-Instead, `assets/gold_dbt.py`'s `gold_dbt_assets` reads the partition's
-silver rows out of Iceberg via the same PyIceberg scan the old Python gold
-assets used, and writes them to a local Parquet file *before* invoking
-`dbt build`; the staging model (`stg_silver_prices_hourly.sql`) just calls
-`read_parquet()` on it. No DuckDB extensions, no S3 credentials, no
-platform risk inside dbt at all — every touchpoint with the lake stays in
-the already-proven PyIceberg/s3fs code.
+That wasn't the original design. `iceberg` was a *community* DuckDB
+extension with no `linux/arm64` build for a long time — exactly why the
+Superset service in docker-compose.yml used to pin `platform: linux/amd64`
+— and the Dagster containers weren't platform-pinned, so loading it inside
+dbt-duckdb would have silently broken the whole pipeline on Apple Silicon,
+not just BI. The first version of this staging model routed around that
+entirely: `assets/gold_dbt.py` scanned silver via PyIceberg in Python and
+wrote it to a local Parquet file, and the staging model read that file with
+`read_parquet()` instead — no DuckDB extensions, no platform risk, at the
+cost of an extra hop.
+
+`iceberg` was later promoted to a *core*, multi-arch DuckDB extension
+(including `linux_arm64`) — but only from roughly DuckDB 1.5.0 on; we were
+pinned to `duckdb>=1.1.3`, well before that. Once the pin was bumped (see
+pyproject.toml's comment) and both Dockerfiles pre-install `httpfs`+
+`iceberg` at build time (mirroring the pattern Superset's Dockerfile
+already used, so no outbound network access is needed at container start —
+see docker/dagster/Dockerfile), the platform risk that justified the
+Parquet hop no longer applies, so it was removed along with Superset's
+`platform: linux/amd64` pin. `assets/gold_dbt.py`'s `gold_dbt_assets` no
+longer touches PyIceberg at all on the read side — dbt reads Iceberg
+directly now. The *write* side is unaffected by any of this — see the note
+above on why dbt still doesn't write Iceberg; that's a different, unrelated
+limitation (DuckDB-Iceberg's write support can't do partitioned-table
+UPDATE/DELETE or copy-on-write, which our overwrite-by-partition pattern
+needs) that no version bump fixes.
 
 ### Why a serving layer for Home Assistant (Phase 5)?
 The lake is great for analytics but slow-cold and coupled to schema choices.
@@ -356,9 +372,8 @@ If you're tracing the data path:
 5. `src/energy_pipeline/assets/silver.py` — read partition's bronze, parse,
    upsert into Iceberg.
 6. `dbt_project/models/staging/stg_silver_prices_hourly.sql` and
-   `dbt_project/models/gold/*.sql` — the gold-layer SQL (Phase 3), reading a
-   Parquet handoff of the partition's silver rows (see
-   `assets/gold_dbt.py`'s docstring for why not `iceberg_scan()` directly).
+   `dbt_project/models/gold/*.sql` — the gold-layer SQL (Phase 3), reading
+   the partition's silver rows via `iceberg_scan()`.
 7. `src/energy_pipeline/assets/gold_dbt.py` — orchestrates the dbt run
    (`gold_dbt_assets`) and publishes its output to Iceberg
    (`gold_prices_daily_stats`, `gold_cheapest_windows`); `assets/gold.py` and

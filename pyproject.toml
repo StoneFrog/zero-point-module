@@ -16,14 +16,21 @@ dependencies = [
     # Lakehouse
     "pyiceberg[s3fs,pyarrow]==0.8.1",
     "pyarrow>=18.0.0",
-    "duckdb>=1.1.3",
+    # >=1.5.0: DuckDB's `iceberg` extension is a core, multi-arch (incl.
+    # linux_arm64) extension only from roughly this version on — the old
+    # 1.1.3-era pin here was community-only and amd64-only, which is why
+    # dbt's staging model used to read a local Parquet handoff instead of
+    # iceberg_scan() directly. See dbt_project/profiles.yml and
+    # LEARNING.md's Phase 3 notes. Couldn't verify the exact lower bound
+    # without network access — confirm with `docker compose build`.
+    "duckdb>=1.5.0",
     # dbt (Phase 3): gold-layer transformations as SQL models w/ tests + docs.
     # Range-pinned, not exact — this was authored without network access to
     # verify which dbt-core/dbt-duckdb patch versions actually resolve
-    # together for dagster 1.9.11; tighten to exact versions once `uv sync`
-    # resolves them for real (uv.lock will pin the resolution regardless).
-    "dbt-core>=1.8,<1.10",
-    "dbt-duckdb>=1.8,<1.10",
+    # together for dagster 1.9.11 and duckdb>=1.5; tighten to exact versions
+    # once `uv sync` resolves them for real (uv.lock will pin it regardless).
+    "dbt-core>=1.9,<1.11",
+    "dbt-duckdb>=1.9,<1.11",
     # HTTP + parsing
     "httpx>=0.27.0",
     "tenacity>=9.0.0",

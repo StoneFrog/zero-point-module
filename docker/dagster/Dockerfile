@@ -30,3 +30,10 @@ RUN mkdir -p ${DAGSTER_HOME}
 
 # Run uv-managed binaries directly.
 ENV PATH="/opt/dagster/app/.venv/bin:${PATH}"
+
+# Pre-install DuckDB extensions (httpfs for S3, iceberg for the dbt staging
+# model's iceberg_scan()) at build time, same reasoning as Superset's
+# Dockerfile: first materialization doesn't need outbound network access
+# for this, and it's cached into the image instead of re-downloaded on
+# every container start.
+RUN python -c "import duckdb; c=duckdb.connect(); c.execute('INSTALL httpfs'); c.execute('INSTALL iceberg'); c.close()"

@@ -1,14 +1,13 @@
-# Committed (not gitignored) because it holds no secrets.
+# Committed (not gitignored) because it holds no secrets — every credential
+# comes from env_var(), same as the rest of this repo's config.
 #
-# Deliberately *not* using DuckDB's `httpfs`/`iceberg` extensions to read the
-# lake directly (e.g. via `iceberg_scan()`): the DuckDB `iceberg` community
-# extension has no linux/arm64 build (see docker-compose.yml's Superset
-# service, which already has to pin `platform: linux/amd64` for the same
-# reason) — using it here would silently break the whole Dagster stack on
-# Apple Silicon, not just BI. Instead assets/gold_dbt.py reads silver via the
-# same PyIceberg scan the old Python gold assets used, writes it to a local
-# Parquet file, and dbt's staging model reads that file with `read_parquet()`
-# — a plain local file, no extensions, no S3 credentials, no platform risk.
+# Uses DuckDB's `httpfs`/`iceberg` extensions to read silver directly via
+# `iceberg_scan()` in the staging model. This needs duckdb>=1.5.0 (see
+# pyproject.toml's comment) — the `iceberg` extension only became a core,
+# multi-arch (incl. linux_arm64) extension around that version. Below that,
+# it was community-only and amd64-only, which is why this project used to
+# route silver through a local Parquet handoff written by Python instead —
+# see git history / LEARNING.md's Phase 3 notes for that era's reasoning.
 #
 # Co-located in the project directory rather than ~/.dbt/profiles.yml so the
 # container just needs one `--profiles-dir` pointed here; see
@@ -25,3 +24,13 @@ energy_pipeline:
       # Rebuilt fresh every run; nothing durable lives in this file.
       path: "target/gold.duckdb"
       schema: main
+      extensions:
+        - httpfs
+        - iceberg
+      settings:
+        s3_endpoint: "{{ env_var('S3_ENDPOINT').replace('http://', '').replace('https://', '') }}"
+        s3_access_key_id: "{{ env_var('MINIO_ROOT_USER') }}"
+        s3_secret_access_key: "{{ env_var('MINIO_ROOT_PASSWORD') }}"
+        s3_region: "{{ env_var('S3_REGION') }}"
+        s3_use_ssl: "{{ 'true' if env_var('S3_ENDPOINT').startswith('https://') else 'false' }}"
+        s3_url_style: "path"

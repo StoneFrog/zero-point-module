@@ -169,15 +169,14 @@ uv run pytest
 
 ## Running dbt directly
 
-Useful for iterating on the gold models without going through Dagster. Needs
-a silver Parquet file to read (see `dbt_project/models/staging/`) — easiest
-to grab one that `gold_dbt_assets` already wrote inside the running
-container:
+Useful for iterating on the gold models without going through Dagster. The
+staging model reads silver straight out of Iceberg, so you just need a
+`delivery_date` that has silver data materialised:
 
 ```bash
 docker compose exec dagster-webserver bash
 cd dbt_project
-dbt build --vars '{"silver_parquet_path": "target/silver_partition.parquet", "window_hours": [1, 2, 3, 4, 6, 8]}'
+dbt build --vars '{"delivery_date": "2026-05-04", "window_hours": [1, 2, 3, 4, 6, 8]}'
 dbt docs generate && dbt docs serve --port 8080  # column-level lineage in the browser
 ```
 
@@ -197,7 +196,7 @@ dbt docs generate && dbt docs serve --port 8080  # column-level lineage in the b
 │   ├── dbt_project.yml
 │   ├── profiles.yml             # committed — no secrets, all env_var()
 │   ├── models/
-│   │   ├── staging/stg_silver_prices_hourly.sql  # reads the Parquet handoff
+│   │   ├── staging/stg_silver_prices_hourly.sql  # reads silver via iceberg_scan()
 │   │   └── gold/
 │   │       ├── int_gold_prices_daily_stats.sql
 │   │       ├── int_gold_cheapest_windows.sql
