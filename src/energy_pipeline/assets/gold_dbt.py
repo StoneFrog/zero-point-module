@@ -56,10 +56,16 @@ class _BareNameDbtTranslator(DagsterDbtTranslator):
     Keeps e.g. `int_gold_prices_daily_stats` addressable as a single-segment
     AssetKey so the publish assets below can `deps=` on it unambiguously,
     rather than relying on dagster-dbt's default (folder-prefixed) key
-    scheme.
+    scheme. Sources are the one exception: `silver_prices_hourly` (see
+    dbt_project/models/staging/_sources.yml) needs to resolve to the *same*
+    AssetKey as the real Dagster-native `silver_prices_hourly` asset, which
+    is exactly what the base translator's handling of `meta.dagster.asset_key`
+    already does — overriding it here would just break that mapping.
     """
 
     def get_asset_key(self, dbt_resource_props) -> AssetKey:
+        if dbt_resource_props.get("resource_type") == "source":
+            return super().get_asset_key(dbt_resource_props)
         return AssetKey(dbt_resource_props["name"])
 
 

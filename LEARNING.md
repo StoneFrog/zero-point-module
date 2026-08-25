@@ -292,6 +292,36 @@ limitation (DuckDB-Iceberg's write support can't do partitioned-table
 UPDATE/DELETE or copy-on-write, which our overwrite-by-partition pattern
 needs) that no version bump fixes.
 
+### Why silver_prices_hourly is declared as a dbt source (Phase 3)
+`stg_silver_prices_hourly.sql` reads silver via `iceberg_scan()`, not
+`{{ ref() }}` or `{{ source() }}` — dbt has no native way to express "call
+this table-valued function with this specific S3 path" through either of
+those. The risk: without a `ref()`/`source()` call somewhere, dbt's manifest
+records *zero* dependency between this model and anything upstream, which
+means dagster-dbt has nothing to wire into the Dagster asset graph either —
+`gold_dbt_assets` would show no dependency on the `silver_prices_hourly`
+Dagster asset at all. That's not just a cosmetic lineage gap: with no
+recorded dependency, Dagster's execution planner has no reason to run
+`silver_prices_hourly` before `gold_dbt_assets` in the same job — they'd be
+independent, parallel-eligible nodes, and gold could compute over
+yesterday's committed silver snapshot instead of the one just written in
+that run (Iceberg's atomic snapshots mean this can't corrupt anything, but
+it would be silently wrong).
+
+The fix: `dbt_project/models/staging/_sources.yml` declares
+`silver_prices_hourly` as a dbt *source* with `meta.dagster.asset_key` set
+to the real Dagster asset key — this is dbt/dagster-dbt's documented
+mechanism for "a table produced by something outside dbt." The staging
+model then has a line of the form `-- {{ source('lake',
+'silver_prices_hourly') }}`: a SQL comment, not a Jinja comment, so dbt's
+Jinja renderer still evaluates it (and therefore still records the
+dependency) even though the actual rendered text is discarded — the real
+`FROM` clause stays `iceberg_scan(...)`. `assets/gold_dbt.py`'s custom
+`DagsterDbtTranslator` has to cooperate: it maps ordinary dbt models to a
+bare (unprefixed) asset key, but explicitly defers to the base translator
+for source nodes, since overriding `get_asset_key` for sources too would
+bypass `meta.dagster.asset_key` and break this exact mapping.
+
 ### Why a serving layer for Home Assistant (Phase 5)?
 The lake is great for analytics but slow-cold and coupled to schema choices.
 A small Postgres "serving table" published from gold gives Home Assistant a

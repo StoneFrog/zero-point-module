@@ -1,0 +1,19 @@
+version: 2
+
+sources:
+  - name: lake
+    tables:
+      - name: silver_prices_hourly
+        description: >
+          The silver.prices_hourly Iceberg table — written directly by the
+          silver_prices_hourly Dagster asset (src/energy_pipeline/assets/silver.py),
+          not by dbt. Declared as a dbt source purely so dagster-dbt records a real
+          dependency edge on it: `meta.dagster.asset_key` below maps this source to
+          the actual Dagster asset key, so gold_dbt_assets is scheduled *after*
+          silver_prices_hourly in the same run instead of being treated as an
+          independent, parallel-eligible node with no ordering guarantee at all.
+          stg_silver_prices_hourly.sql still reads it with iceberg_scan(), not
+          {{ source(...) }} directly — see that model's comment for why.
+        meta:
+          dagster:
+            asset_key: ["silver_prices_hourly"]

@@ -10,6 +10,19 @@
 -- explicit about which partition it's building, mirroring the Dagster
 -- daily-partitioned execution model upstream (see assets/gold_dbt.py, which
 -- passes it via `--vars`).
+--
+-- The line below registers this model's dependency on the
+-- silver_prices_hourly *dbt source* (see _sources.yml) for dagster-dbt's
+-- asset graph — dbt's Jinja renderer still evaluates Jinja expressions
+-- written inside a SQL comment (unlike dbt's dedicated Jinja-comment
+-- syntax, which is stripped entirely before evaluation and would silently
+-- drop this), so the dependency gets recorded in the manifest even though
+-- source()'s actual return value (a plain table reference) isn't usable
+-- here — iceberg_scan() below needs a literal S3 path, not a table name.
+-- Without this line, gold_dbt_assets has no recorded dependency on
+-- silver_prices_hourly at all, and Dagster has no reason to run silver
+-- before gold in the same job.
+-- {{ source('lake', 'silver_prices_hourly') }}
 
 select
     ts_utc,
