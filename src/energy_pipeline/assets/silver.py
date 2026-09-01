@@ -117,7 +117,16 @@ def _read_bronze_partition(delivery_day: date) -> dict[str, bytes]:
         f"delivery_date={delivery_day.isoformat()}/"
     )
     out: dict[str, bytes] = {}
-    for entry in fs.ls(prefix):
+    try:
+        entries = fs.ls(prefix)
+    except FileNotFoundError:
+        # Nothing written for this partition at all — e.g. every zone's fetch
+        # failed upstream, so bronze created no keys under this prefix. s3fs
+        # raises for a missing prefix rather than returning [], which would
+        # surface as an opaque step failure and bypass the "No bronze files"
+        # branch below that exists precisely to handle this case.
+        return out
+    for entry in entries:
         # entry like '<bucket>/bronze/.../zone=PL'
         if not entry.endswith("/"):
             entry = entry + "/"
