@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from energy_pipeline.redaction import redact
+
 # ENTSO-E aligns the "delivery day" to Brussels local time (CET/CEST) across
 # the entire European day-ahead market. zoneinfo handles DST transitions.
 _MARKET_TZ = ZoneInfo("Europe/Brussels")
@@ -27,6 +29,18 @@ FIXTURE_PATH = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "ent
 def _format_period(dt: datetime) -> str:
     """ENTSO-E expects YYYYMMDDhhmm in UTC."""
     return dt.strftime("%Y%m%d%H%M")
+
+
+class EntsoeApiError(RuntimeError):
+    """An upstream ENTSO-E failure, with the security token stripped out.
+
+    Belt-and-braces. The token is sent as a header (see
+    fetch_day_ahead_prices), so it should never reach a URL or an httpx error
+    message in the first place — but bronze_entsoe_day_ahead logs `str(exc)`
+    for every failed zone straight into the Dagster event log and Postgres, so
+    the redaction stays as a second line of defence against a future change
+    that puts the credential back into a stringifiable place.
+    """
 
 
 class EntsoeClient:
@@ -70,8 +84,16 @@ class EntsoeClient:
         period_start = local_midnight.astimezone(timezone.utc)
         period_end = (local_midnight + timedelta(days=1)).astimezone(timezone.utc)
 
+        # The token goes in a header, NOT in `params`. ENTSO-E accepts either
+        # `?securityToken=` or the `SECURITY_TOKEN` header, and the query-param
+        # form puts a live credential inside every URL — which httpx copies
+        # into its exception messages and its INFO-level "HTTP Request: GET
+        # <url>" log line, and which bronze then writes to the Dagster event
+        # log. Keeping the URL credential-free removes that whole class of
+        # leak instead of redacting it at each call site.
+        headers = {"SECURITY_TOKEN": self._api_token}
+
         params = {
-            "securityToken": self._api_token,
             "documentType": DOCUMENT_TYPE_DAY_AHEAD,
             "in_Domain": eic,
             "out_Domain": eic,
@@ -80,6 +102,18 @@ class EntsoeClient:
         }
 
         with httpx.Client(timeout=self._timeout_s) as client:
-            response = client.get(self._base_url, params=params)
-            response.raise_for_status()
-            return response.content
+            try:
+                response = client.get(self._base_url, params=params, headers=headers)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                redacted = redact(str(exc), self._api_token)
+            else:
+                return response.content
+
+        # Raised *outside* the except block deliberately. Raising inside it
+        # would chain the httpx error onto __context__, and that object's own
+        # message still holds the token — `raise ... from None` only hides it
+        # from printed tracebacks, it doesn't drop the reference. Out here
+        # there's no active exception to chain, so nothing reachable from this
+        # error carries the credential.
+        raise EntsoeApiError(redacted)

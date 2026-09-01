@@ -104,7 +104,7 @@ def _ensure_table(catalog: Catalog):
 def _s3_fs() -> s3fs.S3FileSystem:
     return s3fs.S3FileSystem(
         key=settings.minio_root_user,
-        secret=settings.minio_root_password,
+        secret=settings.minio_root_password.get_secret_value(),
         client_kwargs={"endpoint_url": settings.s3_endpoint},
     )
 

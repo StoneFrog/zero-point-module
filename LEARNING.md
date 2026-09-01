@@ -322,6 +322,38 @@ bare (unprefixed) asset key, but explicitly defers to the base translator
 for source nodes, since overriding `get_asset_key` for sources too would
 bypass `meta.dagster.asset_key` and break this exact mapping.
 
+### Why credentials never travel in URLs
+`entsoe_api_token`, `minio_root_password` and `alert_webhook_url` are all
+`SecretStr` in `config.py`, and the ENTSO-E token is sent in the
+`SECURITY_TOKEN` header rather than the `securityToken` query parameter the
+API also accepts.
+
+The reason is what happens on failure, not on success. httpx puts the full
+request URL into its exception messages and into its INFO-level
+`HTTP Request: GET <url>` log line. `bronze_entsoe_day_ahead` logs `str(exc)`
+for every zone whose fetch fails, and Dagster persists those log lines to
+Postgres — so a credential carried in the URL becomes a credential at rest in
+the event log the first time upstream returns an error, without any code doing
+anything obviously wrong. The same reasoning covers `sensors.py`: for a
+Slack-style incoming webhook the URL *is* the credential, so the delivery
+error is scrubbed before it reaches the log.
+
+Three layers, outermost first:
+
+- Keep the secret out of the URL (header auth), so nothing stringifiable
+  holds it in the first place.
+- `SecretStr`, so a stray `print(settings)` or a logged model dump renders
+  `**********` instead of the value.
+- `redaction.redact()` as a backstop at the two places where an exception
+  message reaches a log.
+
+`tests/test_entsoe_client.py` pins the outermost layer by asserting the token
+is absent from the request URL, so a revert to query-parameter auth fails the
+suite rather than silently reintroducing the leak. If ENTSO-E ever rejects the
+header on a GET, restoring `"securityToken": self._api_token` in `params` is
+the fallback — the other two layers still hold, and that test is the one to
+update.
+
 ### Why a serving layer for Home Assistant (Phase 5)?
 The lake is great for analytics but slow-cold and coupled to schema choices.
 A small Postgres "serving table" published from gold gives Home Assistant a

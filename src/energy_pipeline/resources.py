@@ -21,10 +21,16 @@ class EntsoeResource(ConfigurableResource):
     use_fixture: bool = True
 
     def client(self) -> EntsoeClient:
+        # Unwrapped once and reused: the client needs the raw value anyway,
+        # and testing `not token` keeps the "no token configured -> fall back
+        # to the fixture" rule readable without leaning on SecretStr's own
+        # truthiness (which works — it defines __len__ — but is easy to
+        # misread as an always-truthy object).
+        token = settings.entsoe_api_token.get_secret_value()
         return EntsoeClient(
-            api_token=settings.entsoe_api_token,
+            api_token=token,
             base_url=settings.entsoe_base_url,
-            use_fixture=self.use_fixture or not settings.entsoe_api_token,
+            use_fixture=self.use_fixture or not token,
         )
 
 
@@ -46,7 +52,7 @@ class IcebergCatalogResource(ConfigurableResource):
                 "warehouse": f"s3://{settings.lake_bucket}/warehouse",
                 "s3.endpoint": settings.s3_endpoint,
                 "s3.access-key-id": settings.minio_root_user,
-                "s3.secret-access-key": settings.minio_root_password,
+                "s3.secret-access-key": settings.minio_root_password.get_secret_value(),
                 "s3.region": settings.s3_region,
                 "s3.path-style-access": "true",
             },

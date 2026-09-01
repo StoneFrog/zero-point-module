@@ -14,6 +14,7 @@ import httpx
 from dagster import RunFailureSensorContext, run_failure_sensor
 
 from energy_pipeline.config import settings
+from energy_pipeline.redaction import redact
 
 
 def build_alert_payload(context: RunFailureSensorContext) -> dict:
@@ -34,11 +35,18 @@ def pipeline_failure_sensor(context: RunFailureSensorContext) -> None:
     payload = build_alert_payload(context)
     context.log.error(payload["text"])
 
-    if not settings.alert_webhook_url:
+    # Unwrapped once: the raw URL is needed for both the POST and the redaction
+    # below, so there is nothing gained by testing the SecretStr directly.
+    webhook_url = settings.alert_webhook_url.get_secret_value()
+    if not webhook_url:
         return
 
     try:
-        response = httpx.post(settings.alert_webhook_url, json=payload, timeout=10.0)
+        response = httpx.post(webhook_url, json=payload, timeout=10.0)
         response.raise_for_status()
     except Exception as exc:
-        context.log.error(f"Failed to deliver alert webhook: {exc}")
+        # For a Slack-style incoming webhook the URL is the credential, and
+        # httpx embeds the full URL in its error messages — so an unscrubbed
+        # log line here would persist that secret into Dagster's event log
+        # every time Slack is down or rate-limits us.
+        context.log.error(f"Failed to deliver alert webhook: {redact(str(exc), webhook_url)}")
