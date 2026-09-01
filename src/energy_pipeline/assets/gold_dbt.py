@@ -68,6 +68,20 @@ class _BareNameDbtTranslator(DagsterDbtTranslator):
             return super().get_asset_key(dbt_resource_props)
         return AssetKey(dbt_resource_props["name"])
 
+    def get_group_name(self, dbt_resource_props) -> str | None:
+        """Group = the model's models/ subfolder, so gold models join `gold`.
+
+        dagster-dbt's default leaves dbt models ungrouped (`default`) unless
+        the dbt project carries group metadata, which would strand
+        int_gold_prices_daily_stats / int_gold_cheapest_windows away from the
+        publish assets below that share their layer. fqn is
+        ["energy_pipeline", <subfolder>, ..., <name>].
+        """
+        fqn = dbt_resource_props.get("fqn") or []
+        if len(fqn) >= 3:
+            return fqn[1]
+        return super().get_group_name(dbt_resource_props)
+
 
 @dbt_assets(
     manifest=dbt_project.manifest_path,
