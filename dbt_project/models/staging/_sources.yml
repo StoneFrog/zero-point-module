@@ -13,7 +13,10 @@ sources:
           silver_prices_hourly in the same run instead of being treated as an
           independent, parallel-eligible node with no ordering guarantee at all.
           stg_silver_prices_hourly.sql still reads it with iceberg_scan(), not
-          {{ source(...) }} directly — see that model's comment for why.
+          {% raw %}{{ source(...) }}{% endraw %} directly — see that model's
+          comment for why. (The raw block is load-bearing: dbt renders these
+          description fields through Jinja, so an unescaped {% raw %}{{ ... }}{% endraw %}
+          here is evaluated as code and fails `dbt parse`.)
         meta:
           dagster:
             asset_key: ["silver_prices_hourly"]
