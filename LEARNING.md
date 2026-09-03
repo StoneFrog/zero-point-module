@@ -322,6 +322,47 @@ bare (unprefixed) asset key, but explicitly defers to the base translator
 for source nodes, since overriding `get_asset_key` for sources too would
 bypass `meta.dagster.asset_key` and break this exact mapping.
 
+### Why the parser reshapes what ENTSO-E sends (15-minute MTU)
+A `Publication_MarketDocument` is not a flat list of prices, and taking it as
+one produces a plausible-looking series that is quietly wrong. Three things
+have to be undone first, all of them visible in a single live day once Europe
+moved the market time unit to 15 minutes:
+
+**`curveType` A03 means Points are sparse.** Under "variable sized block" a
+Point's price holds until the *next* Point's position, so a zone publishing
+hourly prices on a quarter-hourly grid sends 24 Points at positions 1, 5, 9, …
+covering 96 intervals. Read one-Point-per-interval that becomes a 24-row day
+tagged `resolution_minutes=15` — a quarter of the day, at the wrong spacing,
+with nothing obviously broken about it. Expansion is gated on A03: under a
+fixed-size curve a gap means missing data, and filling it would invent prices.
+
+**Some zones publish the same interval twice.** Identical start, resolution
+and Points, differing only in the TimeSeries `mRID`. Only exact repeats are
+collapsed — two blocks that disagree on price are a real disagreement, and are
+left for silver's `row_integrity` check to report rather than resolved here by
+picking whichever arrived first.
+
+**Some zones publish more than one auction.**
+`classificationSequence_AttributeInstanceComponent.position` separates them:
+sequence 1 is the single day-ahead coupling (SDAC) result this pipeline is
+about, sequence 2 is EXAA's separate 10:15 CE(S)T auction. They are different
+auctions for the same delivery hours, not copies — DE_LU's two blocks disagree
+on all 96 points. Keeping both would both double the day and blend two
+different prices into one series.
+
+The reason all of this surfaced late is that the bundled fixture
+(`PL_2026-05-04`) predates the MTU change: one block, hourly, contiguous
+positions, one auction. It exercised none of the above, so the pipeline passed
+its whole test suite while being unable to parse a real day. The two fixtures
+added alongside it are unedited documents from the run that failed —
+`RS_…_sparse_a03` for the A03 expansion, `DE_LU_…_two_sequences` for the
+auction split.
+
+Worth knowing: `row_integrity` needed no adjustment for any of this. Its
+per-zone bound (`24 * 60 / resolution`, with tolerance for DST) was already
+the right check — it is what caught all three problems, and it passes once the
+parser hands it a correctly shaped day.
+
 ### Why credentials never travel in URLs
 `entsoe_api_token`, `minio_root_password` and `alert_webhook_url` are all
 `SecretStr` in `config.py`, and the ENTSO-E token is sent in the
