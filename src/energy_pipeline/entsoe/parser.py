@@ -30,6 +30,14 @@ NS = {"ns": "urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3"}
 # to avoid inventing prices for a genuinely incomplete series.
 CURVE_VARIABLE_SIZED_BLOCK = "A03"
 
+# Where several day-ahead auctions publish for one bidding zone, ENTSO-E
+# separates them with classificationSequence_AttributeInstanceComponent.position.
+# Sequence 1 is the single day-ahead coupling (SDAC) result — the price this
+# pipeline is about. Sequence 2 is EXAA's separate 10:15 CE(S)T auction, a
+# different auction for the same delivery hours, which is why DE_LU's two
+# blocks disagree on every point rather than being redundant copies.
+SDAC_SEQUENCE = "1"
+
 
 @dataclass(frozen=True)
 class PricePoint:
@@ -44,6 +52,7 @@ class PricePoint:
 class _Block:
     """One Period, carrying the TimeSeries attributes needed to interpret it."""
 
+    sequence: str | None
     curve_type: str
     currency: str
     measure_unit: str
@@ -73,6 +82,10 @@ def _collect_blocks(root: ET.Element) -> list[_Block]:
         currency = (ts.findtext("ns:currency_Unit.name", namespaces=NS) or "EUR").strip()
         measure_unit = (ts.findtext("ns:price_Measure_Unit.name", namespaces=NS) or "MWH").strip()
         curve_type = (ts.findtext("ns:curveType", namespaces=NS) or "").strip()
+        sequence = ts.findtext(
+            "ns:classificationSequence_AttributeInstanceComponent.position", namespaces=NS
+        )
+        sequence = sequence.strip() if sequence else None
 
         for period in ts.findall("ns:Period", NS):
             interval = period.find("ns:timeInterval", NS)
@@ -94,6 +107,7 @@ def _collect_blocks(root: ET.Element) -> list[_Block]:
 
             blocks.append(
                 _Block(
+                    sequence=sequence,
                     curve_type=curve_type,
                     currency=currency,
                     measure_unit=measure_unit,
@@ -105,6 +119,32 @@ def _collect_blocks(root: ET.Element) -> list[_Block]:
             )
 
     return blocks
+
+
+def _select_price_sequence(blocks: list[_Block]) -> list[_Block]:
+    """Keep one auction's blocks when a zone publishes several.
+
+    Only filters when the document actually mixes sequences — a zone with a
+    single auction (the common case, and every zone before the 15-minute MTU
+    go-live) is untouched, sequence tag or not.
+    """
+    sequences = {block.sequence for block in blocks}
+    if len(sequences) <= 1:
+        return blocks
+
+    if SDAC_SEQUENCE in sequences:
+        keep = SDAC_SEQUENCE
+    elif None in sequences:
+        # Some zones label only the *extra* auctions and leave the primary
+        # series untagged (DK_2 sends [None, "2"]), so an untagged block
+        # alongside tagged ones is the primary one.
+        keep = None
+    else:
+        # No primary in sight: take the lowest-numbered sequence rather than
+        # document order, so the choice doesn't depend on response ordering.
+        keep = min(sequences, key=lambda s: (not s.isdigit(), int(s) if s.isdigit() else 0, s))
+
+    return [block for block in blocks if block.sequence == keep]
 
 
 def _drop_duplicate_blocks(blocks: list[_Block]) -> list[_Block]:
@@ -175,7 +215,8 @@ def parse_day_ahead_xml(xml_bytes: bytes) -> list[PricePoint]:
     root = ET.fromstring(xml_bytes)
 
     points: list[PricePoint] = []
-    for block in _drop_duplicate_blocks(_collect_blocks(root)):
+    blocks = _select_price_sequence(_collect_blocks(root))
+    for block in _drop_duplicate_blocks(blocks):
         points.extend(_expand(block))
 
     points.sort(key=lambda p: p.ts_utc)

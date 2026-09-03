@@ -120,3 +120,78 @@ def test_conflicting_repeated_blocks_are_left_for_the_quality_check():
     timestamps = [p.ts_utc for p in points]
     assert len(timestamps) == 4
     assert len(set(timestamps)) == 2  # duplicates survive, row_integrity reports them
+
+
+# --- 15-minute MTU era: several auctions per zone ---
+
+TWO_SEQUENCES = (
+    Path(__file__).parent / "fixtures" / "entsoe_day_ahead_DE_LU_2026-09-01_two_sequences.xml"
+)
+
+
+def test_only_the_sdac_sequence_is_kept():
+    """DE_LU publishes SDAC (sequence 1) and EXAA's 10:15 auction (sequence 2).
+
+    They disagree on every one of the 96 points, so taking both would both
+    double the day and mix two different auctions' prices together.
+    """
+    points = parse_day_ahead_xml(TWO_SEQUENCES.read_bytes())
+    assert len(points) == 96
+    assert len({p.ts_utc for p in points}) == 96
+    # 163.91 is sequence 1's first price; sequence 2 opens at 157.14.
+    assert points[0].price_eur_per_mwh == 163.91
+
+
+def _sequenced(*sequences: str | None) -> bytes:
+    """A document carrying one one-point block per given sequence position."""
+    parts = []
+    for index, sequence in enumerate(sequences):
+        tag = (
+            ""
+            if sequence is None
+            else f"<classificationSequence_AttributeInstanceComponent.position>"
+            f"{sequence}"
+            f"</classificationSequence_AttributeInstanceComponent.position>"
+        )
+        parts.append(
+            f"""
+      <TimeSeries>
+        {tag}
+        <currency_Unit.name>EUR</currency_Unit.name>
+        <price_Measure_Unit.name>MWH</price_Measure_Unit.name>
+        <curveType>A03</curveType>
+        <Period>
+          <timeInterval>
+            <start>2026-09-01T00:00Z</start>
+            <end>2026-09-01T01:00Z</end>
+          </timeInterval>
+          <resolution>PT60M</resolution>
+          <Point><position>1</position><price.amount>{index}</price.amount></Point>
+        </Period>
+      </TimeSeries>"""
+        )
+    doc = (
+        '<?xml version="1.0"?>'
+        '<Publication_MarketDocument'
+        ' xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">'
+        + "".join(parts)
+        + "</Publication_MarketDocument>"
+    )
+    return doc.encode()
+
+
+def test_untagged_block_wins_when_no_sequence_1_is_published():
+    """DK_2 sends [None, "2"] — the untagged series is the primary one."""
+    points = parse_day_ahead_xml(_sequenced(None, "2"))
+    assert [p.price_eur_per_mwh for p in points] == [0.0]
+
+
+def test_lowest_sequence_wins_when_there_is_no_primary():
+    """ES sends tagged-only combinations; don't let response order decide."""
+    points = parse_day_ahead_xml(_sequenced("3", "2"))
+    assert [p.price_eur_per_mwh for p in points] == [1.0]  # the "2" block
+
+
+def test_single_auction_zones_are_untouched():
+    points = parse_day_ahead_xml(_sequenced("2"))
+    assert [p.price_eur_per_mwh for p in points] == [0.0]
