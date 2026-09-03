@@ -50,7 +50,7 @@ def test_a03_sparse_positions_expand_to_full_coverage():
     assert len(set(timestamps)) == 96
 
     # Contiguous 15-minute steps, no gaps left behind by the expansion.
-    steps = {(b - a).total_seconds() for a, b in zip(timestamps, timestamps[1:])}
+    steps = {(b - a).total_seconds() for a, b in zip(timestamps, timestamps[1:], strict=False)}
     assert steps == {900.0}
 
     # Each published price is carried across its four quarter-hours.
