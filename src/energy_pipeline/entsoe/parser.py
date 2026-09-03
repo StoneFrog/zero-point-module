@@ -107,6 +107,28 @@ def _collect_blocks(root: ET.Element) -> list[_Block]:
     return blocks
 
 
+def _drop_duplicate_blocks(blocks: list[_Block]) -> list[_Block]:
+    """Collapse Periods that publish byte-identical content twice.
+
+    Several zones return the same interval twice over: same start, same
+    resolution, same Points. Taken at face value that doubles every row and
+    breaks the (ts_utc, bidding_zone) identity silver relies on. Only exact
+    repeats are collapsed — two blocks covering the same interval with
+    *different* prices are a real disagreement, and are left in place so
+    silver's row_integrity check reports them instead of this quietly picking
+    a winner.
+    """
+    seen: set[tuple] = set()
+    kept: list[_Block] = []
+    for block in blocks:
+        key = (block.start, block.end, block.resolution_minutes, block.points)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(block)
+    return kept
+
+
 def _expand(block: _Block) -> list[PricePoint]:
     """Turn one block's Points into one PricePoint per interval it covers."""
     intervals_in_block: int | None = None
@@ -153,7 +175,7 @@ def parse_day_ahead_xml(xml_bytes: bytes) -> list[PricePoint]:
     root = ET.fromstring(xml_bytes)
 
     points: list[PricePoint] = []
-    for block in _collect_blocks(root):
+    for block in _drop_duplicate_blocks(_collect_blocks(root)):
         points.extend(_expand(block))
 
     points.sort(key=lambda p: p.ts_utc)

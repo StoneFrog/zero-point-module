@@ -79,3 +79,44 @@ def test_non_a03_curves_are_not_forward_filled():
     </Publication_MarketDocument>"""
     points = parse_day_ahead_xml(xml)
     assert [p.price_eur_per_mwh for p in points] == [10.0, 40.0]
+
+
+def _two_blocks(second_price: str) -> bytes:
+    """A document repeating one interval twice, as several zones now do."""
+    block = """
+      <TimeSeries>
+        <currency_Unit.name>EUR</currency_Unit.name>
+        <price_Measure_Unit.name>MWH</price_Measure_Unit.name>
+        <curveType>A03</curveType>
+        <Period>
+          <timeInterval>
+            <start>2026-09-01T00:00Z</start>
+            <end>2026-09-01T02:00Z</end>
+          </timeInterval>
+          <resolution>PT60M</resolution>
+          <Point><position>1</position><price.amount>10</price.amount></Point>
+          <Point><position>2</position><price.amount>%s</price.amount></Point>
+        </Period>
+      </TimeSeries>"""
+    doc = (
+        '<?xml version="1.0"?>'
+        '<Publication_MarketDocument'
+        ' xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">'
+        + (block % "20")
+        + (block % second_price)
+        + "</Publication_MarketDocument>"
+    )
+    return doc.encode()
+
+
+def test_identical_repeated_blocks_are_collapsed():
+    points = parse_day_ahead_xml(_two_blocks("20"))
+    assert [p.price_eur_per_mwh for p in points] == [10.0, 20.0]
+
+
+def test_conflicting_repeated_blocks_are_left_for_the_quality_check():
+    """Same interval, different prices is a real disagreement — don't guess."""
+    points = parse_day_ahead_xml(_two_blocks("99"))
+    timestamps = [p.ts_utc for p in points]
+    assert len(timestamps) == 4
+    assert len(set(timestamps)) == 2  # duplicates survive, row_integrity reports them
