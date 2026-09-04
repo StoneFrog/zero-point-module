@@ -196,7 +196,7 @@ dbt docs generate && dbt docs serve --port 8080  # column-level lineage in the b
 │   ├── dbt_project.yml
 │   ├── profiles.yml             # committed — no secrets, all env_var()
 │   ├── models/
-│   │   ├── staging/stg_silver_prices_hourly.sql  # reads silver via iceberg_scan()
+│   │   ├── staging/stg_silver_prices_15min.sql  # reads silver via iceberg_scan()
 │   │   └── gold/
 │   │       ├── int_gold_prices_daily_stats.sql
 │   │       ├── int_gold_cheapest_windows.sql

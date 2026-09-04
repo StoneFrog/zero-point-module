@@ -24,7 +24,7 @@ with ranked as (
             partition by delivery_date, bidding_zone
             order by price_eur_per_mwh desc, ts_utc asc
         ) as rn_peak
-    from {{ ref('stg_silver_prices_hourly') }}
+    from {{ ref('stg_silver_prices_15min') }}
 )
 
 select

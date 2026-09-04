@@ -260,7 +260,7 @@ also being the thing that talks to the lake. Revisit once this has actually
 been run against the live stack.
 
 ### Why the staging model reads silver via `iceberg_scan()` (and why it didn't at first)
-`stg_silver_prices_hourly.sql` reads silver straight from its Iceberg S3
+`stg_silver_prices_15min.sql` reads silver straight from its Iceberg S3
 location with DuckDB's `iceberg_scan()`, filtered to the partition's
 `delivery_date` — same idea as the README's "Inspecting the lake from the
 CLI" example.
@@ -293,7 +293,7 @@ UPDATE/DELETE or copy-on-write, which our overwrite-by-partition pattern
 needs) that no version bump fixes.
 
 ### Why silver_prices_hourly is declared as a dbt source (Phase 3)
-`stg_silver_prices_hourly.sql` reads silver via `iceberg_scan()`, not
+`stg_silver_prices_15min.sql` reads silver via `iceberg_scan()`, not
 `{{ ref() }}` or `{{ source() }}` — dbt has no native way to express "call
 this table-valued function with this specific S3 path" through either of
 those. The risk: without a `ref()`/`source()` call somewhere, dbt's manifest
@@ -474,7 +474,7 @@ If you're tracing the data path:
    to MinIO. Daily-partitioned Dagster asset.
 5. `src/energy_pipeline/assets/silver.py` — read partition's bronze, parse,
    upsert into Iceberg.
-6. `dbt_project/models/staging/stg_silver_prices_hourly.sql` and
+6. `dbt_project/models/staging/stg_silver_prices_15min.sql` and
    `dbt_project/models/gold/*.sql` — the gold-layer SQL (Phase 3), reading
    the partition's silver rows via `iceberg_scan()`.
 7. `src/energy_pipeline/assets/gold_dbt.py` — orchestrates the dbt run

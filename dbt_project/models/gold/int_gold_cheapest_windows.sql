@@ -21,7 +21,7 @@ with all_windows as (
         ts_utc as window_start_utc,
         avg(price_eur_per_mwh) over w_{{ n }} as window_avg,
         count(*) over w_{{ n }} as window_count
-    from {{ ref('stg_silver_prices_hourly') }}
+    from {{ ref('stg_silver_prices_15min') }}
     where resolution_minutes = 60
     window w_{{ n }} as (
         partition by delivery_date, bidding_zone
