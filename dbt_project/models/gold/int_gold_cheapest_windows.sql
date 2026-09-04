@@ -9,8 +9,17 @@
 -- Window frame bounds must be constants in standard SQL, so each window size
 -- gets its own UNION ALL branch (can't CROSS JOIN a window-sizes table and
 -- have the frame reference a runtime column) — see the Jinja loop below.
+--
+-- The frame counts *rows*, so it is only meaningful because
+-- stg_silver_prices_15min guarantees one row per 15-minute interval for every
+-- zone: an N-hour window is exactly 4N rows, everywhere. Before that
+-- normalisation this model carried `where resolution_minutes = 60`, which
+-- silently dropped the 38 of 40 zones publishing quarter-hourly and left 12
+-- rows where ~240 were meant — a row-counted frame simply cannot serve two
+-- grids at once.
 
 {% set window_hours = var('window_hours', [1, 2, 3, 4, 6, 8]) %}
+{% set intervals_per_hour = 4 %}
 
 with all_windows as (
     {% for n in window_hours %}
@@ -22,11 +31,10 @@ with all_windows as (
         avg(price_eur_per_mwh) over w_{{ n }} as window_avg,
         count(*) over w_{{ n }} as window_count
     from {{ ref('stg_silver_prices_15min') }}
-    where resolution_minutes = 60
     window w_{{ n }} as (
         partition by delivery_date, bidding_zone
         order by ts_utc
-        rows between current row and {{ n - 1 }} following
+        rows between current row and {{ n * intervals_per_hour - 1 }} following
     )
     {% if not loop.last %}union all{% endif %}
     {% endfor %}
@@ -41,7 +49,7 @@ ranked as (
         ) as rn
     from all_windows
     -- Discard incomplete windows clipped by the end of the day.
-    where window_count = window_hours
+    where window_count = window_hours * {{ intervals_per_hour }}
 )
 
 select
