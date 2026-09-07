@@ -3,7 +3,9 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from energy_pipeline.entsoe.parser import parse_day_ahead_xml
+import pytest
+
+from energy_pipeline.entsoe.parser import _parse_resolution, parse_day_ahead_xml
 
 FIXTURE = Path(__file__).parent / "fixtures" / "entsoe_day_ahead_PL_2026-05-04.xml"
 
@@ -195,3 +197,56 @@ def test_lowest_sequence_wins_when_there_is_no_primary():
 def test_single_auction_zones_are_untouched():
     points = parse_day_ahead_xml(_sequenced("2"))
     assert [p.price_eur_per_mwh for p in points] == [0.0]
+
+
+# --- Documents that carry no prices at all ---
+
+
+def test_acknowledgement_document_yields_no_points():
+    """ENTSO-E answers "no data" with a different document, not an empty one.
+
+    GB has returned this every day since it left the internal market, and a
+    few zones do it for any day they haven't published yet. It must read as
+    zero points so bronze/silver can skip the zone, not raise and take the
+    whole partition down with it.
+    """
+    xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <Acknowledgement_MarketDocument
+        xmlns="urn:iec62325.351:tc57wg16:451-1:acknowledgementdocument:8:0">
+      <mRID>abc123</mRID>
+      <Reason>
+        <code>999</code>
+        <text>No matching data found for Data item Day-ahead Prices.</text>
+      </Reason>
+    </Acknowledgement_MarketDocument>"""
+    assert parse_day_ahead_xml(xml) == []
+
+
+def test_publication_document_with_no_timeseries_yields_no_points():
+    xml = b"""<?xml version="1.0"?>
+    <Publication_MarketDocument
+        xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">
+      <mRID>abc123</mRID>
+    </Publication_MarketDocument>"""
+    assert parse_day_ahead_xml(xml) == []
+
+
+# --- Resolutions we don't handle ---
+
+
+@pytest.mark.parametrize("resolution", ["PT1H", "P1D", "PT30S", ""])
+def test_unsupported_resolution_is_rejected_loudly(resolution):
+    """Only minute-denominated durations parse; anything else must raise.
+
+    ENTSO-E sends PT15M/PT60M today, but PT1H is an equally legal spelling of
+    the same hour. Pinned as a failure rather than a fix because a silent
+    mis-read here would place every point of the day at the wrong timestamp —
+    if a publisher ever switches spelling, this is the test that says so.
+    """
+    with pytest.raises(ValueError):
+        _parse_resolution(resolution)
+
+
+@pytest.mark.parametrize(("text", "minutes"), [("PT15M", 15), ("PT60M", 60), ("PT30M", 30)])
+def test_supported_resolutions_parse_to_minutes(text, minutes):
+    assert _parse_resolution(text) == minutes
