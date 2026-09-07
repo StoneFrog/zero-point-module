@@ -312,15 +312,49 @@ The fix: `dbt_project/models/staging/_sources.yml` declares
 `silver_prices_hourly` as a dbt *source* with `meta.dagster.asset_key` set
 to the real Dagster asset key — this is dbt/dagster-dbt's documented
 mechanism for "a table produced by something outside dbt." The staging
-model then has a line of the form `-- {{ source('lake',
-'silver_prices_hourly') }}`: a SQL comment, not a Jinja comment, so dbt's
-Jinja renderer still evaluates it (and therefore still records the
-dependency) even though the actual rendered text is discarded — the real
-`FROM` clause stays `iceberg_scan(...)`. `assets/gold_dbt.py`'s custom
-`DagsterDbtTranslator` has to cooperate: it maps ordinary dbt models to a
-bare (unprefixed) asset key, but explicitly defers to the base translator
-for source nodes, since overriding `get_asset_key` for sources too would
-bypass `meta.dagster.asset_key` and break this exact mapping.
+model then reads it with an ordinary `{{ source('lake',
+'silver_prices_hourly') }}` in its `FROM` clause. `assets/gold_dbt.py`'s
+custom `DagsterDbtTranslator` has to cooperate: it maps ordinary dbt models
+to a bare (unprefixed) asset key, but explicitly defers to the base
+translator for source nodes, since overriding `get_asset_key` for sources
+too would bypass `meta.dagster.asset_key` and break this exact mapping.
+
+That `FROM` clause used to be `iceberg_scan('s3://...')`, with the
+dependency smuggled in as `-- {{ source(...) }}` — a SQL comment, not a
+Jinja comment, so dbt's renderer still evaluated it and recorded the edge
+even though the rendered text was discarded. It worked, but it meant the
+manifest's dependency and the query's actual input were two unrelated
+things that happened to agree; nothing would have caught them drifting
+apart. See the next section for what replaced it.
+
+### Why dbt reads silver through the REST catalog, not by S3 path
+`profiles.yml` attaches the Iceberg REST catalog as a DuckDB database named
+`lake`, so the source resolves to a real relation — `lake.energy.prices_hourly` —
+and the staging model is a plain `FROM {{ source(...) }}`. Three things get
+better at once: the comment hack above disappears, the model no longer needs
+`env_var('LAKE_BUCKET')` to build a path, and reader and writer now agree by
+construction — the catalog PyIceberg commits through is the same one dbt asks
+for the current snapshot.
+
+Two details cost some time. `AUTHORIZATION_TYPE 'none'` is required: DuckDB's
+iceberg extension assumes OAuth2 and fails with "no 'secret' was provided"
+against an unauthenticated catalog. And the catalog knows nothing about
+"silver" and "gold" — those live in the S3 paths and in this project's own
+labels, while the catalog holds one flat namespace, `energy`, with all three
+tables in it (`NAMESPACE = "energy"` in `assets/silver.py`, reused by both gold
+modules).
+
+This was originally not possible: the `iceberg` DuckDB extension was
+community-only and amd64-only, which is the same constraint that forced the
+Parquet handoff described above. It became viable somewhere between then and
+DuckDB 1.5.
+
+Superset stays on `iceberg_scan()` by path, and that is not an oversight —
+duckdb_engine's connect options can run `LOAD` and `SET` but have no hook for
+issuing an `ATTACH`, and DuckDB doesn't persist attachments into the database
+file, so there's nowhere to put one. That's the reason `write_version_hint()`
+still exists (see `iceberg_utils.py`); the pipeline itself no longer depends on
+it.
 
 ### Why the parser reshapes what ENTSO-E sends (15-minute MTU)
 A `Publication_MarketDocument` is not a flat list of prices, and taking it as

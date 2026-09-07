@@ -24,10 +24,23 @@ def write_version_hint(table) -> int:
       canonical file "<zero-padded-version>-<uuid>.metadata.json", which
       neither DuckDB nor Hive-style tools can find via the version-hint.
 
-    Modern REST-catalog Iceberg readers (Trino REST, Spark REST, PyIceberg)
-    don't need any of this — the catalog service tells them the current
-    metadata pointer. This is purely a bridge so tools that don't speak the
-    REST catalog protocol can still scan the table via its S3 path.
+    Anything that speaks the REST catalog needs none of this — the catalog
+    tells it the current metadata pointer. Since Phase 3 that includes dbt:
+    the staging model attaches the catalog and reads
+    `lake.energy.prices_hourly` by name (see dbt_project/profiles.yml), so
+    the pipeline itself no longer depends on these two files at all.
+
+    They stay for Superset, which cannot take that route. Superset reaches
+    DuckDB through duckdb_engine, whose connect options run `LOAD <ext>` and
+    `SET <k>=<v>` but have no hook for issuing an `ATTACH`; and DuckDB does
+    not persist attachments in the database file, so pointing Superset at a
+    pre-attached file doesn't work either. Path-based `iceberg_scan()` is
+    what's left, and it needs the version hint to find the current metadata.
+
+    The cost of keeping them is a stale-read window: both files are written
+    *after* the snapshot commits, so a path-based reader in between still
+    sees the previous version. Harmless for daily batch publishes; worth
+    remembering before pointing anything latency-sensitive at the S3 path.
 
     Returns the version number written.
     """

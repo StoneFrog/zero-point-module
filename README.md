@@ -102,28 +102,49 @@ When everything is healthy:
 
 ## Inspecting the lake from the CLI
 
-Pop into the Dagster container and use DuckDB:
+Pop into the Dagster container and use DuckDB. Attach the REST catalog and the
+tables are addressable by name — the same route dbt takes (see
+`dbt_project/profiles.yml`), so you see exactly the snapshot the catalog
+currently points at:
 
 ```bash
 docker compose exec dagster-webserver bash
 python - <<'PY'
 import duckdb
 con = duckdb.connect()
-con.execute("INSTALL httpfs; LOAD httpfs;")
+con.execute("INSTALL httpfs; LOAD httpfs; INSTALL iceberg; LOAD iceberg;")
 con.execute("SET s3_endpoint='minio:9000';")
 con.execute("SET s3_access_key_id='minioadmin';")
 con.execute("SET s3_secret_access_key='minioadmin';")
 con.execute("SET s3_use_ssl=false; SET s3_url_style='path';")
-con.execute("INSTALL iceberg; LOAD iceberg;")
+# AUTHORIZATION_TYPE 'none' is required: the extension assumes OAuth2, and
+# this reference catalog is unauthenticated.
+con.execute("""
+    ATTACH '' AS lake (TYPE ICEBERG,
+                       ENDPOINT 'http://iceberg-catalog:8181',
+                       AUTHORIZATION_TYPE 'none')
+""")
+print(con.sql("SHOW ALL TABLES"))
 print(
     con.sql("""
         SELECT bidding_zone, ts_utc, price_eur_per_mwh
-        FROM iceberg_scan('s3://lake/silver/prices_hourly')
+        FROM lake.energy.prices_hourly
         ORDER BY ts_utc, bidding_zone
         LIMIT 20
     """)
 )
 PY
+```
+
+Note the naming: the catalog holds one flat namespace, `energy`, with all three
+tables in it. "silver" and "gold" live in the S3 paths and in this project's own
+labels — `gold.prices_daily_stats` is not an address you can query.
+
+Reading by path still works and needs no catalog at all, which is how Superset
+reads (see below):
+
+```sql
+SELECT * FROM iceberg_scan('s3://lake/silver/prices_hourly');
 ```
 
 ## Connecting Superset to the lake
@@ -170,8 +191,8 @@ uv run pytest
 ## Running dbt directly
 
 Useful for iterating on the gold models without going through Dagster. The
-staging model reads silver straight out of Iceberg, so you just need a
-`delivery_date` that has silver data materialised:
+staging model reads silver from the Iceberg REST catalog, so the catalog has to
+be up, and you need a `delivery_date` that has silver data materialised:
 
 ```bash
 docker compose exec dagster-webserver bash
@@ -196,7 +217,7 @@ dbt docs generate && dbt docs serve --port 8080  # column-level lineage in the b
 │   ├── dbt_project.yml
 │   ├── profiles.yml             # committed — no secrets, all env_var()
 │   ├── models/
-│   │   ├── staging/stg_silver_prices_15min.sql  # reads silver via iceberg_scan()
+│   │   ├── staging/stg_silver_prices_15min.sql  # reads silver via the REST catalog
 │   │   └── gold/
 │   │       ├── int_gold_prices_daily_stats.sql
 │   │       ├── int_gold_cheapest_windows.sql

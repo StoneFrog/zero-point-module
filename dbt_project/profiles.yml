@@ -1,8 +1,8 @@
 # Committed (not gitignored) because it holds no secrets — every credential
 # comes from env_var(), same as the rest of this repo's config.
 #
-# Uses DuckDB's `httpfs`/`iceberg` extensions to read silver directly via
-# `iceberg_scan()` in the staging model. This needs duckdb>=1.5.0 (see
+# Uses DuckDB's `httpfs`/`iceberg` extensions to read silver through the
+# Iceberg REST catalog attached below. This needs duckdb>=1.5.0 (see
 # pyproject.toml's comment) — the `iceberg` extension only became a core,
 # multi-arch (incl. linux_arm64) extension around that version. Below that,
 # it was community-only and amd64-only, which is why this project used to
@@ -34,3 +34,26 @@ energy_pipeline:
         s3_region: "{{ env_var('S3_REGION') }}"
         s3_use_ssl: "{{ 'true' if env_var('S3_ENDPOINT').startswith('https://') else 'false' }}"
         s3_url_style: "path"
+      # Attach the Iceberg REST catalog as a read-only database named `lake`,
+      # so models reference silver as `lake.energy.prices_hourly` through a
+      # normal dbt `source()` instead of pointing iceberg_scan() at a raw S3
+      # path. The catalog resolves the current snapshot, which is what makes
+      # this the same view of the table that PyIceberg writes through — a
+      # path-based read has to find the pointer itself from a version-hint
+      # file written *after* the commit, and briefly sees the previous
+      # version in between.
+      #
+      # AUTHORIZATION_TYPE 'none' is required: DuckDB's iceberg extension
+      # assumes OAuth2 and fails with "no 'secret' was provided" otherwise.
+      # The reference catalog here is unauthenticated; a real deployment
+      # would set this to the catalog's actual auth scheme.
+      #
+      # S3 access still comes from the settings above — ATTACH only needs to
+      # reach the catalog over HTTP; the data files are fetched at scan time.
+      attach:
+        - path: ""
+          alias: lake
+          type: iceberg
+          options:
+            endpoint: "{{ env_var('ICEBERG_CATALOG_URI') }}"
+            authorization_type: "none"

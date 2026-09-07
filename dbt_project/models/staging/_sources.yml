@@ -2,21 +2,30 @@ version: 2
 
 sources:
   - name: lake
+    # `lake` is the Iceberg REST catalog, attached in profiles.yml. `energy`
+    # is the Iceberg namespace — note the layer names ("silver", "gold") are
+    # not in the catalog at all: they live in the S3 paths and in this
+    # project's own labels, while the catalog holds all three tables in one
+    # flat namespace.
+    database: lake
+    schema: energy
     tables:
+      # The dbt-side name keeps the `silver_` prefix so models read as
+      # `source('lake', 'silver_prices_hourly')` and the Dagster asset key
+      # below still matches the real asset; `identifier` is the actual
+      # Iceberg table name.
       - name: silver_prices_hourly
+        identifier: prices_hourly
         description: >
-          The silver.prices_hourly Iceberg table — written directly by the
-          silver_prices_hourly Dagster asset (src/energy_pipeline/assets/silver.py),
-          not by dbt. Declared as a dbt source purely so dagster-dbt records a real
-          dependency edge on it: `meta.dagster.asset_key` below maps this source to
-          the actual Dagster asset key, so gold_dbt_assets is scheduled *after*
-          silver_prices_hourly in the same run instead of being treated as an
-          independent, parallel-eligible node with no ordering guarantee at all.
-          stg_silver_prices_15min.sql still reads it with iceberg_scan(), not
-          {% raw %}{{ source(...) }}{% endraw %} directly — see that model's
-          comment for why. (The raw block is load-bearing: dbt renders these
-          description fields through Jinja, so an unescaped {% raw %}{{ ... }}{% endraw %}
-          here is evaluated as code and fails `dbt parse`.)
+          The silver.prices_hourly Iceberg table — written by the
+          silver_prices_hourly Dagster asset (src/energy_pipeline/assets/silver.py)
+          through PyIceberg, not by dbt. dbt reads it through the same REST catalog
+          that PyIceberg commits to, so a model always sees the snapshot the catalog
+          currently points at.
+
+          meta.dagster.asset_key maps this source onto the real Dagster asset key, so
+          gold_dbt_assets is scheduled *after* silver_prices_hourly in the same run
+          instead of being treated as an independent, parallel-eligible node.
         meta:
           dagster:
             asset_key: ["silver_prices_hourly"]
