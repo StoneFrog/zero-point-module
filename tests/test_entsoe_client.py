@@ -78,3 +78,21 @@ def test_redact_backstop_strips_the_token():
     assert redact(f"boom ?securityToken={TOKEN}&x=1", TOKEN) == "boom ?securityToken=***&x=1"
     # An empty token must not turn every message into asterisks.
     assert redact("boom", "") == "boom"
+
+
+def test_no_token_configured_reads_the_fixture_without_calling_out(monkeypatch):
+    """The offline path: an unset credential must not produce a live 401.
+
+    Registered here rather than in test_resources.py because the client makes
+    the same decision independently of the resource that builds it — both
+    layers have to agree, or a token-less deployment quietly starts hammering
+    ENTSO-E with unauthenticated requests.
+    """
+
+    def handler(request):  # pragma: no cover - reaching this is the failure
+        raise AssertionError(f"no HTTP call expected, got {request.url}")
+
+    client = _client(handler, monkeypatch)
+    client._api_token = ""
+
+    assert client.fetch_day_ahead_prices(EIC, DAY).startswith(b"<?xml")
