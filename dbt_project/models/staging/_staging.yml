@@ -1,0 +1,37 @@
+version: 2
+
+models:
+  - name: stg_silver_prices_15min
+    description: >
+      One partition of silver.prices_hourly, re-gridded so every row is exactly
+      one 15-minute interval whatever resolution the publisher used. Ephemeral:
+      it exists only as a CTE inside the gold models, which is why the tests
+      below run against it inline rather than a materialised table.
+      See assert_staging_grid_is_uniform_15min.sql for the grid invariant
+      itself — the column tests here only cover what a single row must look
+      like.
+    columns:
+      - name: ts_utc
+        description: Interval start, UTC. Unique per (delivery_date, bidding_zone).
+        tests: [not_null]
+      - name: delivery_date
+        description: Calendar day this interval belongs to.
+        tests: [not_null]
+      - name: bidding_zone
+        description: ENTSO-E bidding zone code (see entsoe/zones.py).
+        tests: [not_null]
+      - name: resolution_minutes
+        description: >
+          Always 15 by construction — the published resolution stays recorded
+          upstream in silver.prices_hourly. accepted_values, not just not_null,
+          because a row arriving here at any other resolution means the
+          expansion silently didn't happen and every row-counted window frame
+          downstream is measuring the wrong span.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [15]
+              quote: false
+      - name: price_eur_per_mwh
+        description: Day-ahead price for the interval, carried from the published interval.
+        tests: [not_null]
