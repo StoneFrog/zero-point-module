@@ -5,6 +5,6 @@ set -euo pipefail
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<-EOSQL
     CREATE DATABASE dagster;
-    CREATE DATABASE nessie;
+    CREATE DATABASE iceberg_catalog;
     CREATE DATABASE superset;
 EOSQL

@@ -88,9 +88,9 @@ services:
     ports:
       - "8181:8181"
     environment:
-      # Catalog metadata store: JDBC against our shared Postgres (db: nessie).
+      # Catalog metadata store: JDBC against our shared Postgres.
       CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
-      CATALOG_URI: jdbc:postgresql://postgres:5432/nessie
+      CATALOG_URI: jdbc:postgresql://postgres:5432/iceberg_catalog
       CATALOG_JDBC_USER: ${POSTGRES_USER}
       CATALOG_JDBC_PASSWORD: ${POSTGRES_PASSWORD}
       # Default warehouse — newly-created namespaces/tables land here.
