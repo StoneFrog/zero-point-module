@@ -9,7 +9,7 @@
 -- covering Europe. A missing zone is only visible against an expectation, so
 -- that expectation is written down here.
 
-{% set window_hours = var('window_hours', [1, 2, 3, 4, 6, 8]) %}
+{% set window_hours = var('window_hours') %}
 
 with zone_days as (
 

@@ -18,7 +18,7 @@
 -- rows where ~240 were meant — a row-counted frame simply cannot serve two
 -- grids at once.
 
-{% set window_hours = var('window_hours', [1, 2, 3, 4, 6, 8]) %}
+{% set window_hours = var('window_hours') %}
 {% set intervals_per_hour = 4 %}
 
 with all_windows as (

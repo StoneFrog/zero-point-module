@@ -6,6 +6,16 @@ config-version: 2
 # this directory — see profiles.yml's header comment for why).
 profile: energy_pipeline
 
+# The window sizes int_gold_cheapest_windows computes, declared once here so
+# the model and the test that checks its coverage cannot disagree about which
+# set they are talking about — a test defaulting to a different list than the
+# model would either check windows nobody asked for or quietly check a subset
+# and pass. Dagster overrides this per run from WINDOW_HOURS in
+# assets/gold_windows.py (via --vars); tests/test_dbt_project_files.py pins the
+# two lists together, since dbt can't read the Python one.
+vars:
+  window_hours: [1, 2, 3, 4, 6, 8]
+
 model-paths: ["models"]
 test-paths: ["tests"]
 target-path: "target"
