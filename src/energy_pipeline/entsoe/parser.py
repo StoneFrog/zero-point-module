@@ -17,6 +17,7 @@ four intervals. Reading those Points one-per-interval would silently produce a
 short, wrongly-spaced day, so A03 blocks are expanded here.
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
@@ -62,11 +63,33 @@ class _Block:
     points: tuple[tuple[int, float], ...]  # (position, price), document order
 
 
+# ISO-8601 durations, restricted to the hour/minute forms ENTSO-E uses for a
+# market time unit: PT15M, PT30M, PT60M, and PT1H — which is the same duration
+# as PT60M written the other legal way, and which zones do send. Anything
+# outside this shape is rejected rather than guessed at: a resolution read
+# wrongly doesn't lose one value, it shifts every point of the day onto the
+# wrong timestamp, and a loud failure is recoverable where that isn't.
+#
+# Deliberately excluded: seconds (PT900S), and day/week durations (P1D) that
+# ENTSO-E defines for other document types but not for day-ahead prices.
+# Neither has ever appeared here, and inventing untested handling for them
+# would trade a clear error for a silent one.
+_RESOLUTION_PATTERN = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?")
+
+
 def _parse_resolution(text: str) -> int:
-    """ISO-8601 duration like 'PT60M' -> 60 minutes."""
-    if not text.startswith("PT") or not text.endswith("M"):
-        raise ValueError(f"Unsupported resolution: {text}")
-    return int(text[2:-1])
+    """ISO-8601 duration like 'PT60M' or 'PT1H' -> 60 minutes."""
+    match = _RESOLUTION_PATTERN.fullmatch(text.strip())
+    if match is None:
+        raise ValueError(f"Unsupported resolution: {text!r}")
+
+    hours, minutes = match.groups()
+    total = int(hours or 0) * 60 + int(minutes or 0)
+    if total <= 0:
+        # 'PT' with no components, or an explicit 'PT0M'. Zero would divide by
+        # zero when sizing a block, so it fails here with a readable message.
+        raise ValueError(f"Unsupported resolution: {text!r}")
+    return total
 
 
 def _parse_iso_utc(text: str) -> datetime:

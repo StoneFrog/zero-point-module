@@ -231,22 +231,88 @@ def test_publication_document_with_no_timeseries_yields_no_points():
     assert parse_day_ahead_xml(xml) == []
 
 
-# --- Resolutions we don't handle ---
+# --- Resolution spellings ---
 
 
-@pytest.mark.parametrize("resolution", ["PT1H", "P1D", "PT30S", ""])
+@pytest.mark.parametrize(
+    ("text", "minutes"),
+    [
+        ("PT15M", 15),
+        ("PT30M", 30),
+        ("PT60M", 60),
+        # The same hour, spelled the other legal ISO-8601 way. Both forms have
+        # to land on 60 or an hourly zone's whole day is silently misplaced.
+        ("PT1H", 60),
+        ("PT2H", 120),
+        # Combined components: no market publishes this, but the pattern reads
+        # it unambiguously, and pinning it stops a later "simplification" that
+        # drops the hours half.
+        ("PT1H30M", 90),
+        (" PT15M ", 15),
+    ],
+)
+def test_supported_resolutions_parse_to_minutes(text, minutes):
+    assert _parse_resolution(text) == minutes
+
+
+@pytest.mark.parametrize(
+    "resolution",
+    [
+        "P1D",  # legal ISO-8601, but not a market time unit prices publish on
+        "PT30S",  # sub-minute; would break the 15-minute grid downstream
+        "PT15",  # no unit at all
+        "15M",  # missing the PT designator
+        "PT",  # designator with no components
+        "PT0M",  # zero would divide by zero when sizing a block
+        "",
+    ],
+)
 def test_unsupported_resolution_is_rejected_loudly(resolution):
-    """Only minute-denominated durations parse; anything else must raise.
+    """Anything outside PT<h>H<m>M must raise rather than be guessed at.
 
-    ENTSO-E sends PT15M/PT60M today, but PT1H is an equally legal spelling of
-    the same hour. Pinned as a failure rather than a fix because a silent
-    mis-read here would place every point of the day at the wrong timestamp —
-    if a publisher ever switches spelling, this is the test that says so.
+    A resolution read wrongly doesn't lose one value — it shifts every point
+    of the day onto the wrong timestamp, and does it silently. Raising fails
+    the zone's parse, which bronze and silver both report; a wrong number
+    goes all the way to gold looking plausible.
     """
     with pytest.raises(ValueError):
         _parse_resolution(resolution)
 
 
-@pytest.mark.parametrize(("text", "minutes"), [("PT15M", 15), ("PT60M", 60), ("PT30M", 30)])
-def test_supported_resolutions_parse_to_minutes(text, minutes):
-    assert _parse_resolution(text) == minutes
+def test_pt1h_document_parses_the_same_as_pt60m():
+    """The spelling must not change a single timestamp or price.
+
+    Whole-document rather than helper-level: _parse_resolution's return value
+    is what positions every Point on the clock, so this is the assertion that
+    actually protects the day.
+    """
+    document = """<?xml version="1.0"?>
+    <Publication_MarketDocument
+        xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">
+      <TimeSeries>
+        <currency_Unit.name>EUR</currency_Unit.name>
+        <price_Measure_Unit.name>MWH</price_Measure_Unit.name>
+        <curveType>A01</curveType>
+        <Period>
+          <timeInterval>
+            <start>2026-09-01T00:00Z</start>
+            <end>2026-09-01T03:00Z</end>
+          </timeInterval>
+          <resolution>%s</resolution>
+          <Point><position>1</position><price.amount>10</price.amount></Point>
+          <Point><position>2</position><price.amount>20</price.amount></Point>
+          <Point><position>3</position><price.amount>30</price.amount></Point>
+        </Period>
+      </TimeSeries>
+    </Publication_MarketDocument>"""
+
+    hours = parse_day_ahead_xml((document % "PT1H").encode())
+    minutes = parse_day_ahead_xml((document % "PT60M").encode())
+
+    assert hours == minutes
+    assert [p.ts_utc.isoformat() for p in hours] == [
+        "2026-09-01T00:00:00+00:00",
+        "2026-09-01T01:00:00+00:00",
+        "2026-09-01T02:00:00+00:00",
+    ]
+    assert {p.resolution_minutes for p in hours} == {60}
