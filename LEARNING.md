@@ -178,15 +178,42 @@ co-located-only feature. What's unique to co-located checks is purely a
 matter of where you put the `yield` relative to your own side-effecting
 code, and whether you act on the result yourself.
 
-`silver_prices_hourly` actually uses that: `row_integrity` computes
-`check_silver_row_integrity` and yields the result *before* the
-`table.overwrite()` call, then explicitly checks `if not passed: return`
-before reaching it — so a duplicate key or null price never reaches
-Iceberg, not just "gets flagged after the fact." (Earlier versions of this
-asset yielded the check but didn't branch on it, which meant bad rows got
-written anyway and only *downstream* steps were skipped for that one run —
-a real gap, since Dagster still shows the materialization as successful and
-a later independent re-run of gold reads the bad data with no gate at all.)
+`silver_prices_hourly` yields `row_integrity` *before* the
+`table.overwrite()` call and then guards it with `if not passed: return`, so
+a duplicate key or null price never reaches Iceberg rather than being
+flagged after the fact. (Earlier versions yielded the check but didn't
+branch on it, so bad rows were written anyway and only *downstream* steps
+were skipped for that run — a real gap, since the materialization still
+shows as successful and a later independent re-run of gold reads the bad
+data with no gate at all.)
+
+**What actually stops the write, though, is not that guard.** On dagster
+1.9.11, yielding a *failed*, blocking, ERROR-severity check raises
+`DagsterAssetCheckFailedError` from the `yield` itself, inside the engine's
+event processing. The asset function never resumes, so the `if not passed:
+return` line below it is unreachable in this version.
+
+Verified rather than reasoned about, by corrupting one price in PL's bronze
+XML so the day's two published Periods disagreed (the parser deliberately
+keeps conflicting blocks for exactly this check to catch), then
+materialising the partition:
+
+- `row_integrity` failed with `duplicate_keys: 96`, `zones_out_of_bounds: ['PL']`
+- the step failed with `DagsterAssetCheckFailedError`
+- **no** `ASSET_MATERIALIZATION` event was emitted, and the guard's own
+  `context.log.error("row_integrity check failed for …")` line never
+  appeared — which is what proves the guard didn't run
+- silver's snapshot id was byte-identical before and after, row counts
+  unchanged (3,696 / PL 96), and the poison value never appeared in the table
+- re-running the same selection with gold included failed at silver; neither
+  gold table's snapshot moved
+- restoring the original XML and re-materialising returned the partition to
+  a passing check and the same row counts
+
+Keep the guard anyway. It costs two lines, and it is the thing that would
+still stop the write if the check were ever downgraded to non-blocking or
+WARN, or if Dagster changed when that error is raised. It is defence in
+depth against a version change, not the mechanism in force today.
 `bronze.py`'s `zone_completeness` and `gold_dbt.py`'s `stats_consistency`
 don't do this — they're WARN, not ERROR, and deliberately don't gate their
 own writes:

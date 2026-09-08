@@ -233,12 +233,23 @@ def silver_prices_hourly(
         },
     )
     if not passed:
-        # Don't let rows that fail the identifier/NOT NULL invariants reach
-        # Iceberg — `blocking=True` above only skips *this run's* downstream
-        # step, it doesn't stop this function from writing. Whatever was
-        # already committed for this partition (last good run, or nothing)
-        # is left as-is; re-running the partition after a fix behaves the
-        # same as any other failed materialization.
+        # Unreachable on dagster 1.9.11, and kept deliberately.
+        #
+        # Yielding a failed blocking ERROR check raises
+        # DagsterAssetCheckFailedError from the `yield` above, inside the
+        # engine, so this function never resumes and the overwrite below is
+        # never reached — measured, not assumed: a partition forced to fail
+        # this check emitted no materialization event and never logged the
+        # line below, while silver's snapshot id stayed put. See LEARNING.md.
+        #
+        # It stays because it costs two lines and it is what would still stop
+        # the write if this check were downgraded to non-blocking or WARN, or
+        # if a future Dagster stopped raising here. Defence in depth against a
+        # version change, not the mechanism in force today.
+        #
+        # Either way the outcome is the same: whatever was already committed
+        # for this partition (last good run, or nothing) is left as-is, and
+        # re-running after a fix behaves like any other failed materialization.
         context.log.error(f"row_integrity check failed for {delivery_day}: {integrity_details}")
         yield Output(None, metadata={"rows_written": MetadataValue.int(0)})
         return
