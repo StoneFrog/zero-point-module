@@ -6,6 +6,15 @@ config-version: 2
 # this directory — see profiles.yml's header comment for why).
 profile: energy_pipeline
 
+# dbt phones home with anonymous usage statistics by default, and generates
+# dbt_project/.user.yml (a per-installation UUID) on first run to identify
+# itself across invocations. Off here: this pipeline runs unattended in
+# containers, so nobody is around to weigh the trade, and a data pipeline
+# shouldn't make outbound calls nobody asked for. `dbt clean` and the
+# gitignored .user.yml are the only traces left behind.
+flags:
+  send_anonymous_usage_stats: false
+
 # The window sizes int_gold_cheapest_windows computes, declared once here so
 # the model and the test that checks its coverage cannot disagree about which
 # set they are talking about — a test defaulting to a different list than the
