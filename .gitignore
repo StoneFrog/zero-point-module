@@ -22,6 +22,8 @@ dagster_home/schedules/
 dagster_home/.logs_queue/
 dagster_home/logs/
 dagster_home/compute_logs/
+# Webserver UI onboarding flag (`seen: 1`), written on first visit.
+dagster_home/.nux/
 
 # Local data lake (when running outside docker)
 .lake/
@@ -31,6 +33,10 @@ data/
 dbt_project/target/
 dbt_project/logs/
 dbt_project/dbt_packages/
+# Anonymous usage-tracking id dbt generates per installation. Not a
+# secret, but it identifies one machine — a committed one would be
+# shared by every clone.
+dbt_project/.user.yml
 
 # Editor
 .vscode/
