@@ -14,9 +14,17 @@ or it didn't, and the assertion is that one fact.
 
 It also stays honest through a change in *which* layer stops the write. Two
 protect it today — dagster raising at the yield, and the `if not passed: return`
-guard behind it — and this test passes as long as either one holds, which is
-the actual requirement. See test_blocking_checks.py for the reporting
-difference between them, which is the part that isn't doubled up.
+guard behind it — and this passes as long as either one holds, which is the
+actual requirement.
+
+The layers differ in one way the data-safety tests can't see: dagster raising
+makes the run *fail*, while the guard alone lets it report success with
+`rows_written: 0`. That's an alerting difference, not a correctness one — a
+corrupt partition stops being loud rather than starting to be wrong. It isn't
+pinned with a test, because the only way to reach it is a deliberate bump of
+the exact-pinned dagster, whose release notes would carry a change to blocking
+semantics in bold. The last test below covers the version of that risk we can
+actually cause ourselves.
 """
 
 import contextlib
@@ -120,3 +128,19 @@ def test_a_healthy_partition_is_written(overwrites, monkeypatch):
     """The other half — the gate must not be stopping good data too."""
     assert _run(_healthy_xml(), monkeypatch).success
     assert overwrites == [24]
+
+
+def test_silver_row_integrity_is_declared_blocking():
+    """The half of the contract that is ours to get wrong.
+
+    Dropping `blocking=True` leaves the data safe — the guard still stops the
+    write — but the run goes green on a corrupt partition, so nobody chases the
+    bad upstream data. Unlike a dagster behaviour change, this is a one-line
+    edit someone could plausibly make while tidying.
+
+    Severity is chosen at yield time in silver.py rather than in the spec, so
+    only the blocking half is declarative and checkable here.
+    """
+    specs = {spec.name: spec for spec in silver_prices_hourly.check_specs}
+    assert "row_integrity" in specs
+    assert specs["row_integrity"].blocking is True
