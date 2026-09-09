@@ -28,20 +28,14 @@ def build_alert_payload(context: RunFailureSensorContext) -> dict:
     return {"text": text}
 
 
-@run_failure_sensor(
-    description="Log (and optionally webhook-alert) when any job run in this repo fails.",
-    # Dagster defaults instigators to STOPPED, so alerting that nobody
-    # remembered to toggle on in the UI is alerting that does not exist —
-    # and the failure it stays silent through is exactly the one you needed
-    # it for. RUNNING makes a fresh `docker compose up` arrive armed.
-    default_status=DefaultSensorStatus.RUNNING,
-)
-def pipeline_failure_sensor(context: RunFailureSensorContext) -> None:
-    payload = build_alert_payload(context)
-    context.log.error(payload["text"])
+def deliver_alert(payload: dict, log) -> None:
+    """POST the payload to ALERT_WEBHOOK_URL, if one is configured.
 
-    # Unwrapped once: the raw URL is needed for both the POST and the redaction
-    # below, so there is nothing gained by testing the SecretStr directly.
+    Never raises: a webhook that is down must not turn one failed run into a
+    failing sensor as well.
+    """
+    # Unwrapped once — the raw URL is needed for both the POST and the
+    # redaction below.
     webhook_url = settings.alert_webhook_url.get_secret_value()
     if not webhook_url:
         return
@@ -50,8 +44,18 @@ def pipeline_failure_sensor(context: RunFailureSensorContext) -> None:
         response = httpx.post(webhook_url, json=payload, timeout=10.0)
         response.raise_for_status()
     except Exception as exc:
-        # For a Slack-style incoming webhook the URL is the credential, and
-        # httpx embeds the full URL in its error messages — so an unscrubbed
-        # log line here would persist that secret into Dagster's event log
-        # every time Slack is down or rate-limits us.
-        context.log.error(f"Failed to deliver alert webhook: {redact(str(exc), webhook_url)}")
+        # For a Slack-style incoming webhook the URL *is* the credential, and
+        # httpx embeds it in its error messages — an unscrubbed log line here
+        # would persist that secret into Dagster's event log every time the
+        # endpoint is down.
+        log.error(f"Failed to deliver alert webhook: {redact(str(exc), webhook_url)}")
+
+
+@run_failure_sensor(
+    description="Log (and optionally webhook-alert) when any job run in this repo fails.",
+    default_status=DefaultSensorStatus.RUNNING,
+)
+def pipeline_failure_sensor(context: RunFailureSensorContext) -> None:
+    payload = build_alert_payload(context)
+    context.log.error(payload["text"])
+    deliver_alert(payload, context.log)
