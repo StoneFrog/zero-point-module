@@ -11,7 +11,7 @@ out of the box.
 """
 
 import httpx
-from dagster import RunFailureSensorContext, run_failure_sensor
+from dagster import DefaultSensorStatus, RunFailureSensorContext, run_failure_sensor
 
 from energy_pipeline.config import settings
 from energy_pipeline.redaction import redact
@@ -30,6 +30,11 @@ def build_alert_payload(context: RunFailureSensorContext) -> dict:
 
 @run_failure_sensor(
     description="Log (and optionally webhook-alert) when any job run in this repo fails.",
+    # Dagster defaults instigators to STOPPED, so alerting that nobody
+    # remembered to toggle on in the UI is alerting that does not exist —
+    # and the failure it stays silent through is exactly the one you needed
+    # it for. RUNNING makes a fresh `docker compose up` arrive armed.
+    default_status=DefaultSensorStatus.RUNNING,
 )
 def pipeline_failure_sensor(context: RunFailureSensorContext) -> None:
     payload = build_alert_payload(context)

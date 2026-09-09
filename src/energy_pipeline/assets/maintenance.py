@@ -24,6 +24,7 @@ from dagster import (
     AssetCheckResult,
     AssetCheckSeverity,
     AssetCheckSpec,
+    DefaultScheduleStatus,
     MetadataValue,
     Output,
     ScheduleDefinition,
@@ -115,4 +116,8 @@ lake_file_health_schedule = ScheduleDefinition(
     description=(
         "Weekly (Monday 06:00 Brussels) file-count / small-file check across managed tables."
     ),
+    # See the sensor in sensors.py: monitoring that ships switched off is not
+    # monitoring. Read-only — it lists S3 and reports, so an unattended stack
+    # running it costs nothing.
+    default_status=DefaultScheduleStatus.RUNNING,
 )
