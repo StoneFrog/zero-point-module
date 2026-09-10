@@ -456,6 +456,18 @@ header on a GET, restoring `"securityToken": self._api_token` in `params` is
 the fallback — the other two layers still hold, and that test is the one to
 update.
 
+### Why defer OpenLineage / DataHub (explicit Phase 4 decision)?
+Dagster already gives this project the lineage it needs: the asset graph
+contains the declared dependencies, partition and materialisation history, and
+data-quality checks; dbt docs provide the model-level graph. Adding a separate
+OpenLineage collector would duplicate those graphs while requiring manually
+maintained dataset mappings that could drift from the pipeline.
+
+**Decision:** do not implement OpenLineage, Marquez, or DataHub while Dagster
+and dbt are the only lineage producers. Revisit this only when a second
+producer enters the system or an external, tool-neutral catalog becomes a real
+consumer requirement.
+
 ### Why a serving layer for Home Assistant (Phase 5)?
 The lake is great for analytics but slow-cold and coupled to schema choices.
 A small Postgres "serving table" published from gold gives Home Assistant a
@@ -468,8 +480,8 @@ Standard "data product" pattern.
   gold-layer Python with SQL models + tests + docs; see "Why dbt writes to a
   scratch DuckDB file instead of Iceberg directly" above for the one place
   it's not a 1:1 swap.
-- **OpenLineage / DataHub** — Phase 4. Wire-format lineage events out of
-  Dagster + dbt for an external catalog UI.
+- **OpenLineage / DataHub** — explicitly deferred. Dagster's asset graph and
+  dbt docs remain the single lineage view; see the Phase 4 decision above.
 - **FastAPI + serving Postgres** — Phase 5. The Home Assistant interface.
 - **Compaction job** — Phase 2. Rewrite small daily files into bigger ones
   periodically.
@@ -572,6 +584,6 @@ If you're tracing the data path:
 | 1 | End-to-end ingest + lakehouse + dashboards | bronze/silver/gold, Iceberg REST catalog, Superset |
 | 2 | Operational hardening | AssetCheck data-quality gates, small-file monitoring (compaction itself deferred — see notes above), run-failure alerting |
 | 3 (this) | dbt | Gold layer replaced with dbt models (tests + docs); dbt orchestrated via `@dbt_assets`, dbt tests surface as Dagster checks |
-| 4 | Lineage emission | OpenLineage events from Dagster+dbt; optional DataHub |
+| 4 (deferred) | External lineage catalog | Not implemented by decision: Dagster asset graph + dbt docs are sufficient until a second producer or external catalog consumer exists |
 | 5 | Smart-home interface | Postgres serving layer, FastAPI, auth, Home Assistant integration |
 | 6 | Forecasting | Price forecast model; load-shifting recommendations |
